@@ -1,4 +1,5 @@
 using NAudio.Wave;
+using NAudio.Wave.SampleProviders;
 
 namespace AudioGrabber.Services;
 
@@ -21,15 +22,20 @@ public class RecordingErrorEventArgs : EventArgs
 }
 
 /// <summary>
-/// Handles all audio recording operations
+/// Handles all audio recording operations with dual-capture (system audio + microphone)
 /// </summary>
 public class AudioRecorderService : IDisposable
 {
-    private WasapiLoopbackCapture? _capture;
+    private WasapiLoopbackCapture? _loopbackCapture;  // System audio
+    private WaveInEvent? _microphoneCapture;          // Microphone
+    private BufferedWaveProvider? _loopbackBuffer;
+    private BufferedWaveProvider? _microphoneBuffer;
     private WaveFileWriter? _writer;
     private RecordingLogger? _logger;
     private DateTime _recordingStartTime;
     private long _bytesRecorded;
+    private bool _microphoneAvailable;
+    private readonly object _lockObject = new object();
     
     public event EventHandler<RecordingStateChangedEventArgs>? StateChanged;
     public event EventHandler<RecordingErrorEventArgs>? ErrorOccurred;
@@ -38,7 +44,7 @@ public class AudioRecorderService : IDisposable
     public string? CurrentRecordingPath { get; private set; }
     
     /// <summary>
-    /// Start recording audio
+    /// Start recording audio (system audio + microphone)
     /// </summary>
     public void StartRecording(string outputPath)
     {
@@ -56,29 +62,77 @@ public class AudioRecorderService : IDisposable
                 Directory.CreateDirectory(directory);
             }
             
-            // Initialize capture device
-            _capture = new WasapiLoopbackCapture();
-            
-            // Initialize logger
+            // Initialize logger first
             _logger = new RecordingLogger();
-            _logger.StartSession(outputPath, _capture.WaveFormat);
             
-            // Initialize wave file writer
-            _writer = new WaveFileWriter(outputPath, _capture.WaveFormat);
+            // Initialize loopback capture (system audio)
+            _loopbackCapture = new WasapiLoopbackCapture();
+            var loopbackFormat = _loopbackCapture.WaveFormat;
             
-            // Wire up data available event
-            _capture.DataAvailable += OnDataAvailable;
-            _capture.RecordingStopped += OnRecordingStopped;
+            // Try to initialize microphone capture
+            _microphoneAvailable = false;
+            try
+            {
+                _microphoneCapture = new WaveInEvent
+                {
+                    WaveFormat = new WaveFormat(loopbackFormat.SampleRate, 16, loopbackFormat.Channels),
+                    BufferMilliseconds = 50
+                };
+                _microphoneAvailable = true;
+                _logger.LogInfo("Microphone device detected and initialized");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning($"Microphone not available: {ex.Message}");
+                _logger.LogInfo("Falling back to system audio only");
+                _microphoneCapture = null;
+            }
+            
+            // Create wave file writer with loopback format
+            _writer = new WaveFileWriter(outputPath, loopbackFormat);
+            
+            // Start logger session
+            _logger.StartSession(outputPath, loopbackFormat);
+            
+            // Log audio sources
+            _logger.LogInfo($"System Audio Device: {_loopbackCapture.GetType().Name}");
+            if (_microphoneAvailable && _microphoneCapture != null)
+            {
+                _logger.LogInfo($"Microphone Device: {_microphoneCapture.GetType().Name}");
+                _logger.LogInfo("Mixing Mode: System Audio + Microphone");
+                
+                // Create buffer for microphone (will be resampled/mixed with loopback)
+                _microphoneBuffer = new BufferedWaveProvider(_microphoneCapture.WaveFormat)
+                {
+                    BufferLength = _microphoneCapture.WaveFormat.AverageBytesPerSecond * 5,
+                    DiscardOnBufferOverflow = true
+                };
+                
+                // Wire up microphone data handler
+                _microphoneCapture.DataAvailable += OnMicrophoneDataAvailable;
+            }
+            else
+            {
+                _logger.LogInfo("Mixing Mode: System Audio Only (Microphone not available)");
+            }
+            
+            // Wire up loopback data available event
+            _loopbackCapture.DataAvailable += OnLoopbackDataAvailable;
+            _loopbackCapture.RecordingStopped += OnRecordingStopped;
             
             // Start recording
             CurrentRecordingPath = outputPath;
             _recordingStartTime = DateTime.Now;
             _bytesRecorded = 0;
             
-            _capture.StartRecording();
-            IsRecording = true;
+            // Start both captures
+            _loopbackCapture.StartRecording();
+            if (_microphoneAvailable && _microphoneCapture != null)
+            {
+                _microphoneCapture.StartRecording();
+            }
             
-            _logger.LogInfo($"Audio Device: {_capture.GetType().Name}");
+            IsRecording = true;
             
             StateChanged?.Invoke(this, new RecordingStateChangedEventArgs
             {
@@ -115,7 +169,10 @@ public class AudioRecorderService : IDisposable
                 return;
             }
             
-            _capture?.StopRecording();
+            // Stop captures
+            _loopbackCapture?.StopRecording();
+            _microphoneCapture?.StopRecording();
+            
             // Cleanup will be called in OnRecordingStopped event
         }
         catch (Exception ex)
@@ -132,14 +189,29 @@ public class AudioRecorderService : IDisposable
         }
     }
     
-    private void OnDataAvailable(object? sender, WaveInEventArgs e)
+    private void OnLoopbackDataAvailable(object? sender, WaveInEventArgs e)
     {
         try
         {
             if (_writer != null && e.BytesRecorded > 0)
             {
-                _writer.Write(e.Buffer, 0, e.BytesRecorded);
-                _bytesRecorded += e.BytesRecorded;
+                lock (_lockObject)
+                {
+                    // If microphone is available, mix it with loopback
+                    if (_microphoneAvailable && _microphoneBuffer != null)
+                    {
+                        // Read microphone data and mix with loopback
+                        var mixedBuffer = MixAudioData(e.Buffer, e.BytesRecorded);
+                        _writer.Write(mixedBuffer, 0, mixedBuffer.Length);
+                        _bytesRecorded += mixedBuffer.Length;
+                    }
+                    else
+                    {
+                        // No microphone, just write loopback data
+                        _writer.Write(e.Buffer, 0, e.BytesRecorded);
+                        _bytesRecorded += e.BytesRecorded;
+                    }
+                }
             }
         }
         catch (Exception ex)
@@ -154,6 +226,67 @@ public class AudioRecorderService : IDisposable
             
             StopRecording();
         }
+    }
+    
+    private void OnMicrophoneDataAvailable(object? sender, WaveInEventArgs e)
+    {
+        try
+        {
+            if (_microphoneBuffer != null && e.BytesRecorded > 0)
+            {
+                _microphoneBuffer.AddSamples(e.Buffer, 0, e.BytesRecorded);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError("Error buffering microphone audio data", ex);
+        }
+    }
+    
+    private byte[] MixAudioData(byte[] loopbackData, int loopbackBytes)
+    {
+        // Get microphone data
+        var micBytes = loopbackBytes; // Same amount of data
+        var micData = new byte[micBytes];
+        
+        int actualMicBytes = 0;
+        if (_microphoneBuffer != null)
+        {
+            actualMicBytes = _microphoneBuffer.Read(micData, 0, micBytes);
+        }
+        
+        // Mix the audio (simple addition with clipping prevention)
+        var mixedData = new byte[loopbackBytes];
+        
+        // Assuming 32-bit float format from loopback
+        for (int i = 0; i < loopbackBytes; i += 4)
+        {
+            if (i + 3 < loopbackBytes)
+            {
+                // Read loopback sample (32-bit float)
+                float loopbackSample = BitConverter.ToSingle(loopbackData, i);
+                
+                // Read microphone sample (16-bit PCM) and convert to float
+                float micSample = 0f;
+                if (i < actualMicBytes - 1)
+                {
+                    short micShort = BitConverter.ToInt16(micData, i / 2); // 16-bit is half the size
+                    micSample = micShort / 32768f; // Convert to float (-1.0 to 1.0)
+                }
+                
+                // Mix samples (average to prevent clipping)
+                float mixedSample = (loopbackSample + micSample) * 0.5f;
+                
+                // Clamp to prevent clipping
+                mixedSample = Math.Max(-1.0f, Math.Min(1.0f, mixedSample));
+                
+                // Write mixed sample
+                byte[] sampleBytes = BitConverter.GetBytes(mixedSample);
+                Array.Copy(sampleBytes, 0, mixedData, i, 4);
+            }
+        }
+        
+        return mixedData;
     }
     
     private void OnRecordingStopped(object? sender, StoppedEventArgs e)
@@ -188,21 +321,36 @@ public class AudioRecorderService : IDisposable
     {
         IsRecording = false;
         
-        if (_capture != null)
+        // Dispose loopback capture
+        if (_loopbackCapture != null)
         {
-            _capture.DataAvailable -= OnDataAvailable;
-            _capture.RecordingStopped -= OnRecordingStopped;
-            _capture.Dispose();
-            _capture = null;
+            _loopbackCapture.DataAvailable -= OnLoopbackDataAvailable;
+            _loopbackCapture.RecordingStopped -= OnRecordingStopped;
+            _loopbackCapture.Dispose();
+            _loopbackCapture = null;
         }
         
+        // Dispose microphone capture
+        if (_microphoneCapture != null)
+        {
+            _microphoneCapture.DataAvailable -= OnMicrophoneDataAvailable;
+            _microphoneCapture.Dispose();
+            _microphoneCapture = null;
+        }
+        
+        // Dispose buffers
+        _microphoneBuffer = null;
+        
+        // Dispose writer
         _writer?.Dispose();
         _writer = null;
         
+        // Dispose logger
         _logger?.Dispose();
         _logger = null;
         
         CurrentRecordingPath = null;
+        _microphoneAvailable = false;
     }
     
     public void Dispose()
