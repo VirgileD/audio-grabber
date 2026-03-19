@@ -139,16 +139,59 @@ public class AudioGrabberApplicationContext : ApplicationContext
             else
             {
                 var settings = _configManager.Settings;
+                
+                // Ensure output folder exists
+                try
+                {
+                    Directory.CreateDirectory(settings.OutputFolder);
+                }
+                catch (Exception ex)
+                {
+                    throw new InvalidOperationException(
+                        $"Cannot create output folder: {settings.OutputFolder}\n{ex.Message}", ex);
+                }
+                
+                // Check disk space (at least 100MB free)
+                try
+                {
+                    var drive = new DriveInfo(Path.GetPathRoot(settings.OutputFolder)!);
+                    if (drive.AvailableFreeSpace < 100 * 1024 * 1024)
+                    {
+                        throw new InvalidOperationException(
+                            $"Insufficient disk space. At least 100MB required.\nAvailable: {drive.AvailableFreeSpace / 1024 / 1024}MB");
+                    }
+                }
+                catch (InvalidOperationException)
+                {
+                    throw; // Re-throw our custom exception
+                }
+                catch (Exception ex)
+                {
+                    // Disk space check failed, but continue anyway
+                    Console.WriteLine($"Warning: Could not check disk space: {ex.Message}");
+                }
+                
+                // Generate filename
                 var fileName = string.Format(settings.FileNamePattern, DateTime.Now);
                 var filePath = Path.Combine(settings.OutputFolder, fileName);
+                
+                // Check if file already exists (shouldn't happen with timestamp, but be safe)
+                if (File.Exists(filePath))
+                {
+                    fileName = string.Format(settings.FileNamePattern, DateTime.Now) + "_" + Guid.NewGuid().ToString("N").Substring(0, 8);
+                    filePath = Path.Combine(settings.OutputFolder, fileName);
+                }
                 
                 _audioRecorder.StartRecording(filePath);
             }
         }
         catch (Exception ex)
         {
+            _trayIcon.Icon = _errorIcon;
+            _trayIcon.Text = "AudioGrabber - Error";
+            
             MessageBox.Show(
-                $"Error toggling recording: {ex.Message}",
+                $"Error toggling recording:\n{ex.Message}",
                 "AudioGrabber Error",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Error
