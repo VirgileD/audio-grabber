@@ -1,5 +1,6 @@
 using AudioGrabber.Services;
 using AudioGrabber.Forms;
+using AudioGrabber.Resources;
 using System.Media;
 
 namespace AudioGrabber;
@@ -13,6 +14,11 @@ public class AudioGrabberApplicationContext : ApplicationContext
     private readonly ConfigurationManager _configManager;
     private readonly AudioRecorderService _audioRecorder;
     private readonly GlobalHotkeyManager _hotkeyManager;
+    
+    // Icons for different states
+    private readonly Icon _idleIcon;
+    private readonly Icon _recordingIcon;
+    private readonly Icon _errorIcon;
     
     // Context menu items
     private readonly ToolStripMenuItem _settingsMenuItem;
@@ -29,15 +35,18 @@ public class AudioGrabberApplicationContext : ApplicationContext
         _audioRecorder = new AudioRecorderService();
         _hotkeyManager = new GlobalHotkeyManager();
         
+        // Generate icons for different states
+        _idleIcon = IconGenerator.CreateIdleIcon();
+        _recordingIcon = IconGenerator.CreateRecordingIcon();
+        _errorIcon = IconGenerator.CreateErrorIcon();
+        
         // Create tray icon
         _trayIcon = new NotifyIcon
         {
-            Text = "AudioGrabber",
-            Visible = true
+            Text = "AudioGrabber - Idle",
+            Visible = true,
+            Icon = _idleIcon
         };
-        
-        // Set initial icon (placeholder - will be replaced with actual icons in Phase 3)
-        _trayIcon.Icon = SystemIcons.Application;
         
         // Create context menu
         _settingsMenuItem = new ToolStripMenuItem("Settings...", null, OnSettings);
@@ -149,22 +158,25 @@ public class AudioGrabberApplicationContext : ApplicationContext
     
     private void OnRecordingStateChanged(object? sender, RecordingStateChangedEventArgs e)
     {
-        // Update icon color based on state (placeholder - actual icons in Phase 3)
+        // Update icon and tooltip based on state
         if (e.IsRecording)
         {
-            _trayIcon.Icon = SystemIcons.Exclamation; // Red-ish placeholder
+            _trayIcon.Icon = _recordingIcon;
+            _trayIcon.Text = "AudioGrabber - Recording";
             SystemSounds.Beep.Play();
         }
         else
         {
-            _trayIcon.Icon = SystemIcons.Application; // Gray placeholder
+            _trayIcon.Icon = _idleIcon;
+            _trayIcon.Text = "AudioGrabber - Idle";
             SystemSounds.Beep.Play();
         }
     }
     
     private void OnRecordingError(object? sender, RecordingErrorEventArgs e)
     {
-        _trayIcon.Icon = SystemIcons.Error; // Error icon
+        _trayIcon.Icon = _errorIcon;
+        _trayIcon.Text = "AudioGrabber - Error";
         
         if (_configManager.Settings.ShowNotifications)
         {
@@ -179,13 +191,18 @@ public class AudioGrabberApplicationContext : ApplicationContext
     
     private void OnSettings(object? sender, EventArgs e)
     {
-        // Will be implemented in Phase 3
-        MessageBox.Show(
-            "Settings dialog will be implemented in Phase 3",
-            "AudioGrabber",
-            MessageBoxButtons.OK,
-            MessageBoxIcon.Information
-        );
+        using var settingsForm = new SettingsForm(_configManager);
+        var result = settingsForm.ShowDialog();
+        
+        if (result == DialogResult.OK)
+        {
+            // Re-register hotkey with new settings
+            _hotkeyManager.UnregisterHotkey();
+            RegisterHotkey();
+            
+            // Update startup registry if changed
+            SetStartWithWindows(_configManager.Settings.StartWithWindows);
+        }
     }
     
     private void OnOpenFolder(object? sender, EventArgs e)
@@ -279,6 +296,9 @@ public class AudioGrabberApplicationContext : ApplicationContext
             _hotkeyManager?.Dispose();
             _audioRecorder?.Dispose();
             _trayIcon?.Dispose();
+            _idleIcon?.Dispose();
+            _recordingIcon?.Dispose();
+            _errorIcon?.Dispose();
         }
         
         base.Dispose(disposing);
