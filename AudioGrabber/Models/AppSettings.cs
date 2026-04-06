@@ -13,7 +13,7 @@ public class AppSettings
         "AudioGrabber"
     );
     
-    public string FileNamePattern { get; set; } = "Recording_{0:yyyy-MM-dd_HHmmss}.wav";
+    public string FileNamePattern { get; set; } = "Recording_{0:yyyy-MM-dd_HHmmss}.mp3";
     public int SampleRate { get; set; } = 44100;
     public int BitsPerSample { get; set; } = 16;
     public int Channels { get; set; } = 2;

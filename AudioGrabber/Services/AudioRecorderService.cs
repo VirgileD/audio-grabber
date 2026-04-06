@@ -1,5 +1,6 @@
 using NAudio.Wave;
 using NAudio.Wave.SampleProviders;
+using NAudio.Lame;
 
 namespace AudioGrabber.Services;
 
@@ -30,7 +31,7 @@ public class AudioRecorderService : IDisposable
     private WaveInEvent? _microphoneCapture;          // Microphone
     private BufferedWaveProvider? _loopbackBuffer;
     private BufferedWaveProvider? _microphoneBuffer;
-    private WaveFileWriter? _writer;
+    private LameMP3FileWriter? _writer;
     private RecordingLogger? _logger;
     private DateTime _recordingStartTime;
     private long _bytesRecorded;
@@ -88,8 +89,8 @@ public class AudioRecorderService : IDisposable
                 _microphoneCapture = null;
             }
             
-            // Create wave file writer with loopback format
-            _writer = new WaveFileWriter(outputPath, loopbackFormat);
+            // Create MP3 file writer with loopback format (128 kbps)
+            _writer = new LameMP3FileWriter(outputPath, loopbackFormat, 128);
             
             // Start logger session
             _logger.StartSession(outputPath, loopbackFormat);

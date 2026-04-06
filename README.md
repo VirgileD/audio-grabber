@@ -13,7 +13,7 @@ AudioGrabber is a .NET 8 Windows Forms application that runs in the system tray 
 - **Global Hotkey**: Toggle recording on/off with Ctrl+R (fully configurable)
 - **Dual Audio Capture**: Simultaneously captures system audio output AND microphone input
 - **Real-Time Mixing**: Combines both audio sources into a single recording
-- **High Quality Audio**: Records in WAV format (IEEE Float 32-bit, system sample rate, stereo)
+- **High Quality Audio**: Records in MP3 format (128 kbps, system sample rate, stereo)
 - **Automatic Naming**: Timestamp-based file naming with collision prevention
 - **Visual Feedback**: Custom icons indicate recording state (idle/recording/error)
 - **Audio Feedback**: Simple beep sounds when starting/stopping recording
@@ -47,6 +47,7 @@ AudioGrabber is a .NET 8 Windows Forms application that runs in the system tray 
 - **Framework**: .NET 8
 - **UI Framework**: Windows Forms
 - **Audio Capture**: NAudio library v2.3.0 (WASAPI Loopback + WaveInEvent)
+- **MP3 Encoding**: NAudio.Lame v2.1.0 (LAME MP3 encoder)
 - **Configuration**: System.Text.Json (built-in)
 - **Global Hotkeys**: Windows API (user32.dll P/Invoke)
 
