@@ -1,3 +1,4 @@
+using NAudio.CoreAudioApi;
 using NAudio.Wave;
 using NAudio.Wave.SampleProviders;
 using NAudio.Lame;
@@ -29,6 +30,8 @@ public class AudioRecorderService : IDisposable
 {
     private WasapiLoopbackCapture? _loopbackCapture;  // System audio
     private WaveInEvent? _microphoneCapture;          // Microphone
+    private MMDevice? _renderDevice;                  // Output device being captured
+    private WasapiOut? _silencePlayer;                // Keeps loopback flowing (see StartSilencePlayer)
     private BufferedWaveProvider? _loopbackBuffer;
     private BufferedWaveProvider? _microphoneBuffer;
     private WaveFormat? _microphoneFormat;
@@ -74,7 +77,8 @@ public class AudioRecorderService : IDisposable
             _logger = new RecordingLogger();
             
             // Initialize loopback capture (system audio)
-            _loopbackCapture = new WasapiLoopbackCapture();
+            _renderDevice = WasapiLoopbackCapture.GetDefaultLoopbackCaptureDevice();
+            _loopbackCapture = new WasapiLoopbackCapture(_renderDevice);
             var loopbackFormat = _loopbackCapture.WaveFormat;
             
             // Try to initialize microphone capture
@@ -140,6 +144,7 @@ public class AudioRecorderService : IDisposable
             _bytesRecorded = 0;
             
             // Start both captures
+            StartSilencePlayer(_renderDevice, loopbackFormat);
             _loopbackCapture.StartRecording();
             if (_microphoneAvailable && _microphoneCapture != null)
             {
@@ -184,6 +189,7 @@ public class AudioRecorderService : IDisposable
             }
             
             // Stop captures
+            _silencePlayer?.Stop();
             _loopbackCapture?.StopRecording();
             _microphoneCapture?.StopRecording();
             
@@ -203,6 +209,31 @@ public class AudioRecorderService : IDisposable
         }
     }
     
+    /// <summary>
+    /// Windows only delivers loopback audio while something is playing: during
+    /// silence the capture simply produces no data. Since the recording is driven
+    /// by loopback data, those silent stretches were dropped from the file (time
+    /// jumps) and the mic audio during them was lost. Playing inaudible silence on
+    /// the same device keeps the audio engine running, so loopback delivers a
+    /// continuous stream.
+    /// </summary>
+    private void StartSilencePlayer(MMDevice device, WaveFormat format)
+    {
+        try
+        {
+            _silencePlayer = new WasapiOut(device, AudioClientShareMode.Shared, true, 100);
+            _silencePlayer.Init(new SilenceProvider(format));
+            _silencePlayer.Play();
+            _logger?.LogInfo("Silence keep-alive started (continuous capture during silence)");
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogWarning($"Could not start silence keep-alive, silent stretches may be skipped: {ex.Message}");
+            _silencePlayer?.Dispose();
+            _silencePlayer = null;
+        }
+    }
+
     private void OnLoopbackDataAvailable(object? sender, WaveInEventArgs e)
     {
         try
@@ -412,6 +443,10 @@ public class AudioRecorderService : IDisposable
     {
         IsRecording = false;
         
+        // Dispose silence keep-alive
+        _silencePlayer?.Dispose();
+        _silencePlayer = null;
+
         // Dispose loopback capture
         if (_loopbackCapture != null)
         {
@@ -429,6 +464,9 @@ public class AudioRecorderService : IDisposable
             _microphoneCapture = null;
         }
         
+        _renderDevice?.Dispose();
+        _renderDevice = null;
+
         // Dispose buffers
         _microphoneBuffer = null;
         _microphoneFormat = null;
