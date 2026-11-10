@@ -23,7 +23,6 @@ public class AppSettings
     // UI Settings
     public bool ShowNotifications { get; set; } = true; // For error notifications only
     public bool StartWithWindows { get; set; } = true;
-    public bool MinimizeToTray { get; set; } = true;
 }
 
 [Flags]

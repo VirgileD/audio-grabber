@@ -461,8 +461,7 @@ public partial class SettingsForm : Form
             HotkeyKey = source.HotkeyKey,
             HotkeyModifiers = source.HotkeyModifiers,
             ShowNotifications = source.ShowNotifications,
-            StartWithWindows = source.StartWithWindows,
-            MinimizeToTray = source.MinimizeToTray
+            StartWithWindows = source.StartWithWindows
         };
     }
 }
