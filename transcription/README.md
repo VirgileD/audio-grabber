@@ -26,7 +26,8 @@ For transcription, the setup:
 
 - installs `ffmpeg` and `pulseaudio-utils` (asks for your sudo password once);
 - installs `uv` and a private Python 3.12 with CPU-only libraries (`.venv/`, ~1.6 GB);
-- finds the recordings folder from AudioGrabber's Windows settings (you confirm it);
+- finds the recordings folder from AudioGrabber's Windows settings;
+- asks where transcripts go (e.g. your notes folder), named like `2026-11-12 10h00 transcript.md`;
 - checks and stores the Hugging Face token (`~/.config/agscribe/hf_token`, private);
 - plays two beeps to check that you can hear clips;
 - downloads the models (~2 GB, once: everything runs offline afterwards);
@@ -39,7 +40,7 @@ Re-running `./setup.sh` is safe: it only does what's missing.
 
 | Command | |
 |---|---|
-| `agscribe configure` | Recordings folder, token, audio playback (`--reconfigure` to change them) |
+| `agscribe configure` | Recordings and transcripts folders, token, audio playback (`--reconfigure` to change them) |
 | `agscribe download-models` | Download the models (done by setup) |
 | `agscribe doctor` | Check everything and transcribe a sample |
 
@@ -47,7 +48,7 @@ Coming next: `transcribe`, `name`, `status`, `people`, `render`.
 
 ## Files
 
-- `~/.config/agscribe/config.toml`: settings (recordings folder, models, matching thresholds, playback)
+- `~/.config/agscribe/config.toml`: settings (recordings and transcripts folders, models, matching thresholds, playback)
 - `~/.config/agscribe/hf_token`: Hugging Face token (only used to download models)
 - `~/.cache/huggingface/`: downloaded models
 - `<recordings folder>/transcripts-data/`: known people, voices, working data

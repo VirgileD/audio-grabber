@@ -12,7 +12,7 @@ identification that learns voices over time.
 | Language | Auto-detected per recording |
 | Who-spoke-when | pyannote 4 `speaker-diarization-community-1` (free Hugging Face token, terms accepted once on one page; runs offline afterwards) |
 | Voice recognition | Speaker embeddings (the model inside pyannote) compared with known voices |
-| Transcript format | Markdown, next to the MP3 |
+| Transcript format | Plain Markdown, in a chosen folder (e.g. the notes folder), named `2026-11-12 10h00 transcript.md` |
 | Data location | With the recordings (Windows side), so it survives a WSL reinstall |
 | People | Email = unique ID, plus an optional display name shown in transcripts |
 | Matching | Automatic if sure, asked if unsure, "Speaker N" if unknown |
@@ -34,14 +34,21 @@ AudioGrabber/                      (repo)
 <recordings folder>/               (Windows side, e.g. next to AudioGrabber.exe)
 ├── Recording_2026-11-12_100000.mp3      written by AudioGrabber
 ├── Recording_2026-11-12_100000.log      written by AudioGrabber
-├── Recording_2026-11-12_100000.md       transcript (generated - don't edit by hand)
 └── transcripts-data/
     ├── people.json                      known people: email -> display name (editable)
     ├── voices/<email>/<recording>.npy   voice samples per person (several = more robust)
     └── recordings/Recording_.../
         ├── transcript.json              words, timestamps, speaker turns
         └── speakers.json                per speaker: voice sample, status, assigned email
+
+<transcripts folder>/              (asked at setup, e.g. your notes; default: recordings folder)
+└── 2026-11-12 10h00 transcript.md       transcript (generated - don't edit by hand)
 ```
+
+Transcript names come from the recording's start time (`Recording_2026-11-12_100000`
+-> `2026-11-12 10h00 transcript.md`); two recordings in the same minute get
+` (2)`. The voice data stays with the recordings, so the notes folder only gets
+the transcripts.
 
 `people.json` is the human-editable "participants" file:
 
@@ -81,13 +88,14 @@ For each MP3 in the recordings folder that has no transcript yet:
    - above the "sure" threshold: named automatically;
    - between "unsure" and "sure": kept as a *suggestion*, confirmed in step 2;
    - below: `Speaker 1`, `Speaker 2`, ...
-8. Write `transcript.json`, `speakers.json` and the Markdown.
+8. Write `transcript.json`, `speakers.json`, and the Markdown into the transcripts folder.
 
 Transcript example:
 
 ```markdown
 # Recording 2026-11-12 10:00
 
+- Recording: C:\Users\me\AudioGrabber\Recording_2026-11-12_100000.mp3
 - Duration: 47:12 - Language: French
 - Participants: Virgile <me@example.com>, Alice Martin <alice.martin@corp.com>, Speaker 1 (unidentified)
 
@@ -142,9 +150,13 @@ is ready for the next recording. Safe to re-run (it only does what's missing).
    **Python 3.12** (the system Python is too new for the AI libraries).
 4. Python dependencies from the lock file: CPU-only PyTorch, faster-whisper,
    pyannote.audio, ...
-5. **Recordings folder**: auto-detected from AudioGrabber's Windows settings
-   (`%APPDATA%\AudioGrabber\settings.json`; `./` resolved via the exe location
-   from the startup registry entry), confirmed or typed by the user.
+5. **Folders** (asked on the first run, remembered; `--reconfigure` asks again):
+   - where to install `AudioGrabber.exe` (default `%USERPROFILE%\AudioGrabber`);
+   - where recordings go (default `./`: next to the exe), written to
+     AudioGrabber's `settings.json`;
+   - where transcripts go (e.g. the notes folder; default: recordings folder).
+   agscribe then detects the recordings folder from AudioGrabber's settings
+   (`./` resolved via the exe's startup registry entry).
 6. **Hugging Face token**: explains the page where to accept the model terms
    (with links), asks for the token, checks access, stores it in
    `~/.config/agscribe/` (permissions 600).

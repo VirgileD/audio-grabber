@@ -96,8 +96,14 @@ cd AudioGrabber
 ```
 
 `setup.sh` builds AudioGrabber (self-contained: Windows needs no .NET installed),
-installs it to `%USERPROFILE%\AudioGrabber`, starts it, then sets up the
-transcription tools (see [`transcription/README.md`](transcription/README.md)).
+installs it, starts it, then sets up the transcription tools (see
+[`transcription/README.md`](transcription/README.md)). The first run asks:
+
+- where to install `AudioGrabber.exe` (default `%USERPROFILE%\AudioGrabber`);
+- where recordings go (default `./`: next to the exe);
+- where transcripts go (e.g. your notes folder).
+
+Answers are remembered; `./setup.sh --reconfigure` asks again.
 Re-run it after a `git pull` to update: it stops the app, replaces it and restarts
 it, never touching the recordings in that folder.
 

@@ -56,6 +56,7 @@ def configure(
     console.rule("agscribe configuration")
 
     _configure_recordings(config, reconfigure)
+    _configure_transcripts(config, reconfigure)
     cfg.save_config(config)
     token_ok = _configure_token(config, reconfigure)
     _configure_playback(config, reconfigure)
@@ -75,15 +76,39 @@ def _configure_recordings(config: cfg.Config, reconfigure: bool) -> None:
         return
 
     detected, why = windows.detect_recordings_dir()
-    default = str(current or detected or "")
+    if detected and detected.is_dir() and not reconfigure:
+        # Same folder AudioGrabber records to: nothing to ask
+        error = _ensure_writable(detected / cfg.DATA_DIR_NAME)
+        if error is None:
+            config.recordings_dir = str(detected)
+            console.print(f"{OK} {detected}  [dim]({why})[/dim]")
+            return
+        console.print(f"   {FAIL} Can't write in {detected}: {error}")
     if detected:
         console.print(f"   Detected: {detected}  [dim]({why})[/dim]")
     else:
         console.print(f"   {WARN} Not detected: {why}")
-    console.print("   [dim]Windows (C:\\...) or Linux (/mnt/c/...) paths are both accepted.[/dim]")
+    path = _ask_folder("Recordings folder", current or detected, cfg.DATA_DIR_NAME)
+    config.recordings_dir = str(path)
+    console.print(f"{OK} {path}")
 
+
+def _configure_transcripts(config: cfg.Config, reconfigure: bool) -> None:
+    console.print("\n[bold]2. Transcripts folder[/bold] (where the Markdown transcripts are saved, e.g. your notes)")
+    if config.transcripts_dir and Path(config.transcripts_dir).is_dir() and not reconfigure:
+        console.print(f"{OK} {config.transcripts_dir}")
+        return
+    console.print("   [dim]Press Enter to keep them next to the recordings.[/dim]")
+    path = _ask_folder("Transcripts folder", Path(config.transcripts_dir or config.recordings_dir), None)
+    config.transcripts_dir = str(path)
+    console.print(f"{OK} {path}")
+
+
+def _ask_folder(label: str, default: Path | None, subfolder: str | None) -> Path:
+    """Ask for a folder (Windows or Linux path), create it if needed, check it's writable."""
+    console.print("   [dim]Windows (C:\\...) or Linux (/mnt/c/...) paths are both accepted.[/dim]")
     while True:
-        answer = Prompt.ask("   Recordings folder", default=default or None)
+        answer = Prompt.ask(f"   {label}", default=str(default) if default else None)
         if not answer:
             continue
         path = windows.user_path(answer)
@@ -98,20 +123,29 @@ def _configure_recordings(config: cfg.Config, reconfigure: bool) -> None:
             except OSError as exc:
                 console.print(f"   {FAIL} {exc}")
                 continue
-        try:
-            (path / cfg.DATA_DIR_NAME).mkdir(exist_ok=True)
-        except OSError as exc:
-            console.print(f"   {FAIL} Can't write in {path}: {exc}")
+        error = _ensure_writable(path / subfolder if subfolder else path)
+        if error:
+            console.print(f"   {FAIL} Can't write in {path}: {error}")
             continue
-        config.recordings_dir = str(path)
-        console.print(f"{OK} {path}")
-        return
+        return path
+
+
+def _ensure_writable(folder: Path) -> str | None:
+    """Create folder if needed and check it's writable; returns an error message or None."""
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        probe = folder / ".agscribe-write-test"
+        probe.write_text("ok")
+        probe.unlink()
+    except OSError as exc:
+        return str(exc)
+    return None
 
 
 def _configure_token(config: cfg.Config, reconfigure: bool) -> bool:
     from .models import check_token
 
-    console.print("\n[bold]2. Hugging Face token[/bold] (one-time download of the speaker-identification model)")
+    console.print("\n[bold]3. Hugging Face token[/bold] (one-time download of the speaker-identification model)")
     token = cfg.load_token()
     if token and not reconfigure:
         ok, message = check_token(token, config.diarization_model)
@@ -145,7 +179,7 @@ def _configure_playback(config: cfg.Config, reconfigure: bool) -> None:
     from .models import SAMPLE_RATE
     from .playback import Player, test_tone, wsl_playback_available
 
-    console.print("\n[bold]3. Audio playback[/bold] (to listen to voices when naming speakers)")
+    console.print("\n[bold]4. Audio playback[/bold] (to listen to voices when naming speakers)")
     if config.playback_tested and not reconfigure:
         console.print(f"{OK} {'in the terminal (WSL)' if config.playback == 'wsl' else 'Windows player'}")
         return
@@ -232,14 +266,10 @@ def doctor() -> None:
     if check(recordings.is_dir(), f"Recordings folder: {recordings}"):
         mp3_count = len(list(recordings.glob("*.mp3")))
         check(True, f"{mp3_count} recording(s) found")
-        try:
-            config.data_path.mkdir(exist_ok=True)
-            probe = config.data_path / ".write-test"
-            probe.write_text("ok")
-            probe.unlink()
-            check(True, f"Data folder writable: {config.data_path}")
-        except OSError as exc:
-            check(False, f"Data folder not writable: {exc}")
+        error = _ensure_writable(config.data_path)
+        check(error is None, f"Data folder writable: {config.data_path}" + (f" ({error})" if error else ""))
+    error = _ensure_writable(config.transcripts_path)
+    check(error is None, f"Transcripts folder writable: {config.transcripts_path}" + (f" ({error})" if error else ""))
     if config.playback == "wsl":
         check(shutil.which("ffplay") is not None, "ffplay available (clip playback)")
     else:

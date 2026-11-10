@@ -33,6 +33,8 @@ class MatchingConfig:
 @dataclass
 class Config:
     recordings_dir: str = ""
+    # Where the Markdown transcripts go (e.g. a notes folder); empty = recordings folder
+    transcripts_dir: str = ""
     whisper_model: str = WHISPER_MODEL
     diarization_model: str = DIARIZATION_MODEL
     # "wsl": play clips in the terminal through WSLg; "windows": open them in the Windows player
@@ -43,6 +45,10 @@ class Config:
     @property
     def recordings_path(self) -> Path:
         return Path(self.recordings_dir)
+
+    @property
+    def transcripts_path(self) -> Path:
+        return Path(self.transcripts_dir) if self.transcripts_dir else self.recordings_path
 
     @property
     def data_path(self) -> Path:

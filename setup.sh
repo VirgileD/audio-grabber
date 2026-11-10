@@ -5,11 +5,12 @@
 #   2. installs agscribe (transcription, runs in WSL) and checks that it works.
 #
 #   ./setup.sh                   install or update everything (keeps existing settings)
-#   ./setup.sh --reconfigure     also ask the transcription questions again
+#   ./setup.sh --reconfigure     ask the questions again (folders, token, audio)
 #   ./setup.sh --app-only        only build/install/start the Windows app
 #   ./setup.sh --skip-app        only set up transcription
 #
-# The app goes to %USERPROFILE%\AudioGrabber (override: AUDIOGRABBER_INSTALL_DIR=/mnt/...).
+# First run asks: where to install AudioGrabber.exe, where recordings go, where
+# transcripts go (e.g. your notes folder). Answers are remembered.
 #
 # Safe to re-run: only what's missing is installed; the app is rebuilt and updated.
 set -euo pipefail
@@ -18,6 +19,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TRANSCRIPTION="$HERE/transcription"
 BIN_DIR="$HOME/.local/bin"
 LOG_DIR="$HOME/.cache/audiograbber-setup"
+SETUP_CONF="$HOME/.config/audiograbber/setup.conf"   # remembered answers (install folder)
 MIN_FREE_GB=10
 APT_PACKAGES=(ffmpeg pulseaudio-utils ca-certificates curl)
 DOTNET_CHANNEL=8.0
@@ -26,9 +28,10 @@ APP_EXE=AudioGrabber.exe
 DO_APP=1
 DO_TRANSCRIPTION=1
 RECONFIGURE=()
+ASK_AGAIN=0
 for arg in "$@"; do
   case "$arg" in
-    --reconfigure) RECONFIGURE=(--reconfigure) ;;
+    --reconfigure) RECONFIGURE=(--reconfigure); ASK_AGAIN=1 ;;
     --app-only) DO_TRANSCRIPTION=0 ;;
     --skip-app) DO_APP=0 ;;
     -h|--help) sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
@@ -44,8 +47,26 @@ hint() { printf '    %s\n' "$@" >&2; }
 
 mkdir -p "$LOG_DIR"
 
-# Run a Windows command from a Windows folder (cmd.exe refuses \\wsl$ working dirs)
-win() { (cd /mnt/c && "$@" 2>/dev/null | tr -d '\r'); }
+# Run a Windows command from a Windows folder (cmd.exe refuses \\wsl$ working dirs),
+# with stdin disconnected: Windows programs would otherwise swallow typed answers
+win() { (cd /mnt/c && "$@" </dev/null 2>/dev/null | tr -d '\r'); }
+
+# ask "Question" "default": prints the answer (the default if empty / not interactive)
+ask() {
+  local answer=""
+  if [[ -t 0 ]]; then
+    read -r -p "  $1 [$2]: " answer
+  fi
+  printf '%s\n' "${answer:-$2}"
+}
+
+is_windows_path() { [[ "$1" =~ ^[A-Za-z]:[\\/] || "$1" == \\\\* ]]; }
+
+# Windows (C:\x) or WSL (/mnt/c/x) path -> WSL path
+to_wsl_path() {
+  local path="${1%\"}"; path="${path#\"}"
+  if is_windows_path "$path"; then wslpath -u "$path"; else realpath -m "${path/#\~/$HOME}"; fi
+}
 
 # ============================================================================
 step "Checking the system"
@@ -103,11 +124,47 @@ install_app() {
   [[ "$arch" == AMD64 ]] \
     || die "AudioGrabber is built for 64-bit x64 Windows; this Windows reports '${arch:-unknown}'."
 
-  local win_profile install_dir
+  local win_profile install_dir settings_file output_folder
   win_profile=$(win cmd.exe /c 'echo %USERPROFILE%')
   [[ -n "$win_profile" && "$win_profile" != *%* ]] || die "Could not find the Windows user folder (%USERPROFILE%)."
-  # AUDIOGRABBER_INSTALL_DIR (a WSL path) overrides the install folder
-  install_dir="${AUDIOGRABBER_INSTALL_DIR:-$(wslpath -u "$win_profile")/AudioGrabber}"
+  settings_file="$(wslpath -u "$win_profile")/AppData/Roaming/AudioGrabber/settings.json"
+
+  # --- Where to install the exe (remembered in $SETUP_CONF)
+  local INSTALL_DIR_WIN=""
+  # shellcheck disable=SC1090
+  [[ -f "$SETUP_CONF" ]] && . "$SETUP_CONF"
+  if [[ -n "${AUDIOGRABBER_INSTALL_DIR:-}" ]]; then
+    install_dir="$AUDIOGRABBER_INSTALL_DIR"   # for tests / scripted installs (WSL path)
+  elif [[ -n "$INSTALL_DIR_WIN" ]] && (( ! ASK_AGAIN )); then
+    install_dir=$(wslpath -u "$INSTALL_DIR_WIN")
+  else
+    install_dir=$(to_wsl_path "$(ask "Install AudioGrabber.exe in" "${INSTALL_DIR_WIN:-$win_profile\\AudioGrabber}")")
+  fi
+  [[ "$install_dir" == /mnt/[a-z]/* ]] \
+    || die "The app must be installed in a Windows folder (C:\\..., D:\\...), not '$install_dir'."
+  if [[ -z "${AUDIOGRABBER_INSTALL_DIR:-}" ]]; then
+    mkdir -p "$(dirname "$SETUP_CONF")"
+    printf 'INSTALL_DIR_WIN=%q\n' "$(wslpath -w "$install_dir")" >"$SETUP_CONF"
+  fi
+  ok "Install folder: $(wslpath -w "$install_dir")"
+
+  # --- Where recordings go: AudioGrabber's OutputFolder setting ("./" = next to the exe)
+  output_folder=$(read_output_folder "$settings_file")
+  if [[ ! -f "$settings_file" ]] || (( ASK_AGAIN )); then
+    echo "  Recordings folder: './' means next to AudioGrabber.exe (Windows or /mnt/... path)"
+    output_folder=$(ask "Save recordings in" "${output_folder:-./}")
+    if [[ "$output_folder" == /* ]]; then
+      output_folder=$(wslpath -w "$(to_wsl_path "$output_folder")")
+    fi
+  fi
+  local recordings_dir
+  if is_windows_path "$output_folder"; then
+    recordings_dir=$(to_wsl_path "$output_folder")
+  else
+    recordings_dir=$(realpath -m "$install_dir/$output_folder")   # relative to the exe
+  fi
+  mkdir -p "$recordings_dir" || die "Could not create the recordings folder $recordings_dir."
+  ok "Recordings folder: $(wslpath -w "$recordings_dir")"
 
   # .NET 8 SDK, user-local (no sudo). The build needs no culture data, so run
   # .NET in invariant mode instead of requiring the ICU system library.
@@ -159,6 +216,10 @@ install_app() {
   rm -rf "$stage"
   ok "Installed: $(wslpath -w "$install_dir")\\$APP_EXE"
 
+  # The app is stopped: safe to write its settings
+  write_output_folder "$settings_file" "$output_folder" \
+    || die "Could not update AudioGrabber's settings ($settings_file)."
+
   # Start it (through Explorer: fully detached from WSL)
   local started
   started=$(date '+%Y-%m-%dT%H:%M:%S')
@@ -171,6 +232,28 @@ install_app() {
     diagnose_app_crash "$started"
     die "AudioGrabber could not start (see above)."
   fi
+}
+
+# AudioGrabber's settings.json: read / set OutputFolder, keeping the other settings
+read_output_folder() {
+  [[ -f "$1" ]] || return 0
+  python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8-sig")).get("OutputFolder") or "./")' "$1" 2>/dev/null
+}
+
+write_output_folder() {
+  python3 - "$1" "$2" <<'PY'
+import json, os, sys
+path, folder = sys.argv[1], sys.argv[2]
+data = {}
+if os.path.exists(path):
+    with open(path, encoding="utf-8-sig") as f:
+        data = json.load(f)
+data["OutputFolder"] = folder
+os.makedirs(os.path.dirname(path), exist_ok=True)
+with open(path, "w", encoding="utf-8", newline="\r\n") as f:
+    json.dump(data, f, indent=2, ensure_ascii=False)
+    f.write("\n")
+PY
 }
 
 # Show recent Windows "Application" log errors about AudioGrabber (the .NET
@@ -190,7 +273,7 @@ PS
   script=${script/__SINCE__/$since}
   # -EncodedCommand: multi-line scripts are not reliable through stdin
   events=$(cd /mnt/c && powershell.exe -NoProfile -NonInteractive \
-    -EncodedCommand "$(printf '%s' "$script" | iconv -f UTF-8 -t UTF-16LE | base64 -w0)" 2>/dev/null | tr -d '\r')
+    -EncodedCommand "$(printf '%s' "$script" | iconv -f UTF-8 -t UTF-16LE | base64 -w0)" </dev/null 2>/dev/null | tr -d '\r')
   if [[ -n "$events" ]]; then
     printf '%s\n' "$events" | sed 's/^/    /' >&2
   else

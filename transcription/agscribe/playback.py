@@ -71,7 +71,9 @@ class Player:
         if windows_clip is None:
             raise RuntimeError(f"Cannot convert {clip} to a Windows path")
         # Explorer opens the file with the default player and returns immediately
-        subprocess.run(["explorer.exe", windows_clip], cwd="/mnt/c", check=False)
+        subprocess.run(
+            ["explorer.exe", windows_clip], cwd="/mnt/c", check=False, stdin=subprocess.DEVNULL
+        )
 
     def stop(self) -> None:
         if self._process is not None and self._process.poll() is None:

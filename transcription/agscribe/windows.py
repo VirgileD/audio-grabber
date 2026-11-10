@@ -20,6 +20,9 @@ def _run_windows(args: list[str]) -> str | None:
             capture_output=True,
             text=True,
             timeout=20,
+            # Never let Windows programs read our stdin: they would swallow the
+            # user's answers to the next prompt
+            stdin=subprocess.DEVNULL,
             # Windows tools complain when started from a \\wsl$ working directory
             cwd="/mnt/c" if Path("/mnt/c").is_dir() else None,
         )
@@ -38,7 +41,8 @@ def to_wsl_path(windows_path: str) -> Path | None:
     """C:\\Users\\x -> /mnt/c/Users/x (via wslpath)."""
     try:
         result = subprocess.run(
-            ["wslpath", "-u", windows_path], capture_output=True, text=True, timeout=10
+            ["wslpath", "-u", windows_path], capture_output=True, text=True, timeout=10,
+            stdin=subprocess.DEVNULL,
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -49,7 +53,8 @@ def to_wsl_path(windows_path: str) -> Path | None:
 def to_windows_path(wsl_path: Path) -> str | None:
     try:
         result = subprocess.run(
-            ["wslpath", "-w", str(wsl_path)], capture_output=True, text=True, timeout=10
+            ["wslpath", "-w", str(wsl_path)], capture_output=True, text=True, timeout=10,
+            stdin=subprocess.DEVNULL,
         )
     except (OSError, subprocess.SubprocessError):
         return None
