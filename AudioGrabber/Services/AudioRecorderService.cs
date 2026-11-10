@@ -35,6 +35,8 @@ public class AudioRecorderService : IDisposable
     private WasapiOut? _silencePlayer;                // Keeps loopback flowing (see StartSilencePlayer)
     private BufferedWaveProvider? _microphoneBuffer;
     private WaveFormat? _microphoneFormat;
+    private int _loopbackChannels;                    // channels captured from the output device
+    private int _outputChannels;                      // channels written to the MP3 (1 or 2)
 
     // Microphone jitter buffer (see ReadMicrophoneSamples)
     private const int MicTargetLatencyMs = 120;
@@ -95,29 +97,41 @@ public class AudioRecorderService : IDisposable
             _renderDevice = WasapiLoopbackCapture.GetDefaultLoopbackCaptureDevice();
             _loopbackCapture = new WasapiLoopbackCapture(_renderDevice);
             var loopbackFormat = _loopbackCapture.WaveFormat;
+            if (loopbackFormat.BitsPerSample != 32)
+            {
+                // The Windows shared-mode mix format is 32-bit float in practice
+                throw new NotSupportedException(
+                    $"Unsupported system audio format: {loopbackFormat.BitsPerSample}-bit (expected 32-bit float)");
+            }
 
-            // Try to initialize microphone capture
+            // The MP3 encoder only handles mono/stereo: surround devices are downmixed
+            _loopbackChannels = loopbackFormat.Channels;
+            _outputChannels = Math.Min(loopbackFormat.Channels, 2);
+            var outputFormat = WaveFormat.CreateIeeeFloatWaveFormat(loopbackFormat.SampleRate, _outputChannels);
+
+            // Try to initialize microphone capture. Creating a WaveInEvent never fails,
+            // even without a microphone, so check for a capture device explicitly.
             _microphoneAvailable = false;
-            try
+            if (WaveInEvent.DeviceCount > 0)
             {
                 _microphoneCapture = new WaveInEvent
                 {
-                    WaveFormat = new WaveFormat(loopbackFormat.SampleRate, 16, loopbackFormat.Channels),
+                    // Windows converts the mic to this format for us
+                    WaveFormat = new WaveFormat(loopbackFormat.SampleRate, 16, _outputChannels),
                     BufferMilliseconds = 50,
                     NumberOfBuffers = 3
                 };
                 _microphoneAvailable = true;
                 _logger.LogInfo("Microphone device detected and initialized");
             }
-            catch (Exception ex)
+            else
             {
-                _logger.LogWarning($"Microphone not available: {ex.Message}");
+                _logger.LogWarning("No microphone found");
                 _logger.LogInfo("Falling back to system audio only");
-                _microphoneCapture = null;
             }
 
-            // Create MP3 file writer with loopback format (128 kbps), fed by the writer thread
-            var writer = new LameMP3FileWriter(outputPath, loopbackFormat, 128);
+            // Create MP3 file writer (128 kbps), fed by the writer thread
+            var writer = new LameMP3FileWriter(outputPath, outputFormat, 128);
             var writeQueue = new BlockingCollection<byte[]>();
             _writer = writer;
             _writeQueue = writeQueue;
@@ -129,10 +143,14 @@ public class AudioRecorderService : IDisposable
             _writerThread.Start();
 
             // Start logger session
-            _logger.StartSession(outputPath, loopbackFormat);
+            _logger.StartSession(outputPath, outputFormat);
 
             // Log audio sources
-            _logger.LogInfo($"System Audio Device: {_loopbackCapture.GetType().Name}");
+            _logger.LogInfo($"System Audio Device: {_renderDevice.FriendlyName} ({loopbackFormat.Channels} channels)");
+            if (_loopbackChannels > _outputChannels)
+            {
+                _logger.LogInfo($"Downmixing {_loopbackChannels} channels to stereo");
+            }
             if (_microphoneAvailable && _microphoneCapture != null)
             {
                 _logger.LogInfo($"Microphone Device: {_microphoneCapture.GetType().Name}");
@@ -172,7 +190,17 @@ public class AudioRecorderService : IDisposable
             _loopbackCapture.StartRecording();
             if (_microphoneAvailable && _microphoneCapture != null)
             {
-                _microphoneCapture.StartRecording();
+                try
+                {
+                    _microphoneCapture.StartRecording();
+                }
+                catch (Exception ex)
+                {
+                    // e.g. mic in use exclusively, or access denied by privacy settings
+                    _logger.LogWarning($"Microphone could not be started: {ex.Message}");
+                    _logger.LogInfo("Falling back to system audio only");
+                    DisableMicrophone();
+                }
             }
 
             IsRecording = true;
@@ -189,8 +217,8 @@ public class AudioRecorderService : IDisposable
             _logger?.Dispose();
             _logger = null;
 
-            RaiseError("Failed to start recording", ex);
-
+            // No ErrorOccurred here: the caller gets the exception and reports it
+            // (raising both showed the same error twice).
             Cleanup();
             throw;
         }
@@ -268,16 +296,10 @@ public class AudioRecorderService : IDisposable
                     return;
                 }
 
-                // NAudio reuses e.Buffer, so the queued chunk must be a copy
-                byte[] chunk = new byte[e.BytesRecorded];
-                if (_microphoneAvailable && _microphoneBuffer != null)
-                {
-                    MixAudioData(e.Buffer.AsSpan(0, e.BytesRecorded), chunk);
-                }
-                else
-                {
-                    Buffer.BlockCopy(e.Buffer, 0, chunk, 0, e.BytesRecorded);
-                }
+                // NAudio reuses e.Buffer, so the queued chunk is always a new array
+                int frames = e.BytesRecorded / (_loopbackChannels * sizeof(float));
+                byte[] chunk = new byte[frames * _outputChannels * sizeof(float)];
+                MixAudioData(e.Buffer.AsSpan(0, frames * _loopbackChannels * sizeof(float)), chunk);
 
                 _writeQueue.Add(chunk);
                 _bytesRecorded += chunk.Length;
@@ -335,28 +357,119 @@ public class AudioRecorderService : IDisposable
     }
 
     /// <summary>
-    /// Mix a chunk of loopback audio (32-bit float) with the microphone into output.
+    /// Turn a chunk of loopback audio (32-bit float, _loopbackChannels) into the
+    /// output format (_outputChannels): downmix if needed, add the microphone, limit.
     /// </summary>
     private void MixAudioData(ReadOnlySpan<byte> loopbackData, Span<byte> output)
     {
         var loopbackSamples = MemoryMarshal.Cast<byte, float>(loopbackData);
         var outputSamples = MemoryMarshal.Cast<byte, float>(output);
-        int sampleCount = loopbackSamples.Length;
+        int sampleCount = outputSamples.Length;
 
-        if (_micSamples.Length < sampleCount)
+        if (_loopbackChannels == _outputChannels)
         {
-            _micSamples = new float[sampleCount];
+            loopbackSamples.CopyTo(outputSamples);
         }
-        var micSamples = _micSamples.AsSpan(0, sampleCount);
-        ReadMicrophoneSamples(micSamples);
+        else
+        {
+            DownmixToStereo(loopbackSamples, outputSamples, _loopbackChannels);
+        }
+
+        bool mixingMicrophone = _microphoneAvailable && _microphoneBuffer != null;
+        if (!mixingMicrophone && _loopbackChannels == _outputChannels)
+        {
+            return; // nothing was summed: pass system audio through untouched
+        }
+
+        if (mixingMicrophone)
+        {
+            if (_micSamples.Length < sampleCount)
+            {
+                _micSamples = new float[sampleCount];
+            }
+            var micSamples = _micSamples.AsSpan(0, sampleCount);
+            ReadMicrophoneSamples(micSamples);
+
+            for (int i = 0; i < sampleCount; i++)
+            {
+                outputSamples[i] += micSamples[i];
+            }
+        }
 
         for (int i = 0; i < sampleCount; i++)
         {
-            // Mix samples (average to prevent clipping)
-            float mixedSample = (loopbackSamples[i] + micSamples[i]) * 0.5f;
+            outputSamples[i] = Limit(outputSamples[i]);
+        }
+    }
 
-            // Clamp to prevent clipping
-            outputSamples[i] = Math.Clamp(mixedSample, -1.0f, 1.0f);
+    /// <summary>
+    /// Downmix surround (standard channel order FL, FR, FC, LFE, BL, BR, SL, SR)
+    /// to stereo: centre and surrounds go to both sides at -3 dB, LFE is dropped.
+    /// </summary>
+    private static void DownmixToStereo(ReadOnlySpan<float> input, Span<float> output, int inputChannels)
+    {
+        const float minus3dB = 0.7071f;
+        int frames = output.Length / 2;
+        for (int frame = 0; frame < frames; frame++)
+        {
+            var source = input.Slice(frame * inputChannels, inputChannels);
+            float left = source[0];
+            float right = source[1];
+            if (inputChannels > 2)
+            {
+                left += source[2] * minus3dB;
+                right += source[2] * minus3dB;
+            }
+            for (int ch = 4; ch < inputChannels; ch++)
+            {
+                if (ch % 2 == 0)
+                {
+                    left += source[ch] * minus3dB;
+                }
+                else
+                {
+                    right += source[ch] * minus3dB;
+                }
+            }
+            output[frame * 2] = left;
+            output[frame * 2 + 1] = right;
+        }
+    }
+
+    /// <summary>
+    /// Soft limiter: transparent below 0.9, then curves smoothly towards 1.0.
+    /// System audio and the mic are added at full volume (the old code halved
+    /// both, making every recording 6 dB quieter); this only catches the rare
+    /// peaks where the sum would clip.
+    /// </summary>
+    private static float Limit(float sample)
+    {
+        const float knee = 0.9f;
+        float magnitude = MathF.Abs(sample);
+        if (magnitude <= knee)
+        {
+            return sample;
+        }
+        float limited = knee + (1f - knee) * MathF.Tanh((magnitude - knee) / (1f - knee));
+        return MathF.CopySign(limited, sample);
+    }
+
+    /// <summary>
+    /// Continue with system audio only (used when the mic fails to start).
+    /// </summary>
+    private void DisableMicrophone()
+    {
+        lock (_lockObject)
+        {
+            _microphoneAvailable = false;
+            _microphoneBuffer = null;
+            _microphoneFormat = null;
+        }
+        if (_microphoneCapture != null)
+        {
+            _microphoneCapture.DataAvailable -= OnMicrophoneDataAvailable;
+            _microphoneCapture.Dispose();
+            _microphoneCapture = null;
         }
     }
 
