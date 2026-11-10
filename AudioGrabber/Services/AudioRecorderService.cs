@@ -246,8 +246,10 @@ public class AudioRecorderService : IDisposable
     
     private byte[] MixAudioData(byte[] loopbackData, int loopbackBytes)
     {
-        // Get microphone data
-        var micBytes = loopbackBytes; // Same amount of data
+        // Get microphone data: same number of samples as the loopback chunk, but the
+        // mic is 16-bit (2 bytes/sample) while loopback is 32-bit float (4 bytes/sample).
+        // Reading loopbackBytes here consumed twice the mic audio and threw half of it away.
+        var micBytes = loopbackBytes / 2;
         var micData = new byte[micBytes];
         
         int actualMicBytes = 0;
@@ -269,9 +271,10 @@ public class AudioRecorderService : IDisposable
                 
                 // Read microphone sample (16-bit PCM) and convert to float
                 float micSample = 0f;
-                if (i < actualMicBytes - 1)
+                int micOffset = i / 2; // 16-bit is half the size
+                if (micOffset + 1 < actualMicBytes)
                 {
-                    short micShort = BitConverter.ToInt16(micData, i / 2); // 16-bit is half the size
+                    short micShort = BitConverter.ToInt16(micData, micOffset);
                     micSample = micShort / 32768f; // Convert to float (-1.0 to 1.0)
                 }
                 
