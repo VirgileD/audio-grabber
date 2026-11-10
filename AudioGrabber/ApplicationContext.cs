@@ -143,18 +143,18 @@ public class AudioGrabberApplicationContext : ApplicationContext
                 // Ensure output folder exists
                 try
                 {
-                    Directory.CreateDirectory(settings.OutputFolder);
+                    Directory.CreateDirectory(settings.ResolvedOutputFolder);
                 }
                 catch (Exception ex)
                 {
                     throw new InvalidOperationException(
-                        $"Cannot create output folder: {settings.OutputFolder}\n{ex.Message}", ex);
+                        $"Cannot create output folder: {settings.ResolvedOutputFolder}\n{ex.Message}", ex);
                 }
                 
                 // Check disk space (at least 100MB free)
                 try
                 {
-                    var drive = new DriveInfo(Path.GetPathRoot(settings.OutputFolder)!);
+                    var drive = new DriveInfo(Path.GetPathRoot(settings.ResolvedOutputFolder)!);
                     if (drive.AvailableFreeSpace < 100 * 1024 * 1024)
                     {
                         throw new InvalidOperationException(
@@ -173,7 +173,7 @@ public class AudioGrabberApplicationContext : ApplicationContext
                 
                 // Generate filename
                 var fileName = string.Format(settings.FileNamePattern, DateTime.Now);
-                var filePath = Path.Combine(settings.OutputFolder, fileName);
+                var filePath = Path.Combine(settings.ResolvedOutputFolder, fileName);
                 
                 // Check if file already exists (shouldn't happen with timestamp, but be safe)
                 if (File.Exists(filePath))
@@ -181,7 +181,7 @@ public class AudioGrabberApplicationContext : ApplicationContext
                     // Add the suffix before the extension (it used to land after ".mp3")
                     var suffix = "_" + Guid.NewGuid().ToString("N").Substring(0, 8);
                     fileName = Path.GetFileNameWithoutExtension(fileName) + suffix + Path.GetExtension(fileName);
-                    filePath = Path.Combine(settings.OutputFolder, fileName);
+                    filePath = Path.Combine(settings.ResolvedOutputFolder, fileName);
                 }
                 
                 _audioRecorder.StartRecording(filePath);
@@ -254,7 +254,7 @@ public class AudioGrabberApplicationContext : ApplicationContext
     {
         try
         {
-            var folder = _configManager.Settings.OutputFolder;
+            var folder = _configManager.Settings.ResolvedOutputFolder;
             Directory.CreateDirectory(folder);
             System.Diagnostics.Process.Start("explorer.exe", folder);
         }

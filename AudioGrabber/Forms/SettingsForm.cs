@@ -273,7 +273,7 @@ public partial class SettingsForm : Form
         using var dialog = new FolderBrowserDialog
         {
             Description = "Select output folder for recordings",
-            SelectedPath = _outputFolderTextBox.Text,
+            SelectedPath = AppSettings.ResolveFolder(_outputFolderTextBox.Text),
             ShowNewFolderButton = true
         };
         
@@ -288,7 +288,7 @@ public partial class SettingsForm : Form
     {
         try
         {
-            var folder = _outputFolderTextBox.Text;
+            var folder = AppSettings.ResolveFolder(_outputFolderTextBox.Text);
             Directory.CreateDirectory(folder);
             System.Diagnostics.Process.Start("explorer.exe", folder);
         }

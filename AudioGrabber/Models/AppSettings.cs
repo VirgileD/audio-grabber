@@ -9,9 +9,24 @@ namespace AudioGrabber.Models;
 public class AppSettings
 {
     // Recording Settings
-    // Default: the folder containing AudioGrabber.exe. Avoid OneDrive-synced folders
-    // (like Documents): syncing can stall file writes while recording.
-    public string OutputFolder { get; set; } = Path.TrimEndingDirectorySeparator(AppContext.BaseDirectory);
+    // Absolute path, or a path relative to the folder containing AudioGrabber.exe:
+    // "./" (the default) records next to the executable, wherever it is.
+    // Avoid OneDrive-synced folders (like Documents): syncing can stall file writes.
+    public string OutputFolder { get; set; } = "./";
+
+    /// <summary>
+    /// Full path of OutputFolder. Use this, never OutputFolder, to access the disk.
+    /// </summary>
+    [JsonIgnore]
+    public string ResolvedOutputFolder => ResolveFolder(OutputFolder);
+
+    /// <summary>
+    /// Resolve a folder setting: relative paths are relative to the executable's
+    /// folder, not the working directory (which is C:\Windows\System32 when the app
+    /// is started at Windows sign-in).
+    /// </summary>
+    public static string ResolveFolder(string folder) =>
+        Path.GetFullPath(folder, AppContext.BaseDirectory);
     
     public string FileNamePattern { get; set; } = "Recording_{0:yyyy-MM-dd_HHmmss}.mp3";
     

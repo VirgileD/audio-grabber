@@ -230,7 +230,7 @@ Session completed successfully
 
 ## Default Settings
 
-- **Output Folder**: the folder containing `AudioGrabber.exe`
+- **Output Folder**: `./`, i.e. next to `AudioGrabber.exe`, wherever it is
 - **File Pattern**: `Recording_{0:yyyy-MM-dd_HHmmss}.mp3`
 - **Audio Format**: MP3 128 kbps, system sample rate, stereo
 - **Hotkey**: Ctrl+R
@@ -246,7 +246,7 @@ The settings file can be edited by hand while the app is closed:
 
 ```json
 {
-  "OutputFolder": "C:\\Tools\\AudioGrabber",
+  "OutputFolder": "./",
   "FileNamePattern": "Recording_{0:yyyy-MM-dd_HHmmss}.mp3",
   "Hotkey": "Ctrl+R",
   "ShowNotifications": true,
@@ -254,7 +254,9 @@ The settings file can be edited by hand while the app is closed:
 }
 ```
 
-- `OutputFolder`: where recordings go (default: the folder containing `AudioGrabber.exe`)
+- `OutputFolder`: where recordings go. An absolute path (`"D:\\Recordings"`: backslashes are doubled in JSON), or a path relative
+  to the folder containing `AudioGrabber.exe`: `./` (default) records next to the exe wherever
+  it is, `./recordings` in a subfolder. (Relative to the exe, not the working directory.)
 - `FileNamePattern`: file name; `{0:...}` is the recording start date/time
 - `Hotkey`: modifiers `Ctrl`, `Alt`, `Shift`, `Win` plus a key name, e.g. `Ctrl+Shift+F9`
 - `ShowNotifications`: show error popups
