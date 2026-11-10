@@ -306,4 +306,242 @@ def doctor() -> None:
     if failures:
         console.print(f"\n{FAIL} {failures} problem(s) found")
         raise typer.Exit(1)
-    console.print(f"\n{OK} Everything works. Transcribe with: [bold]agscribe transcribe[/bold] (coming next)")
+    console.print(f"\n{OK} Everything works. Transcribe with: [bold]agscribe transcribe[/bold]")
+
+
+# -------------------------------------------------------------------------- transcribe
+
+
+@app.command()
+def transcribe(
+    names: list[str] = typer.Argument(None, help="Recordings to transcribe (default: every new one)."),
+    force: bool = typer.Option(False, "--force", help="Transcribe again recordings already done."),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Start without asking for confirmation."),
+) -> None:
+    """Transcribe new recordings (or the ones given) and match known voices."""
+    import sys
+    import traceback
+    from datetime import datetime
+
+    from rich.progress import BarColumn, Progress, TaskProgressColumn, TextColumn, TimeElapsedColumn
+    from rich.table import Table
+
+    from . import recordings as rec
+    from .pipeline import Models, audio_duration, seconds_per_audio_second, transcribe_recording
+    from .render import pending, short_duration
+    from .voices import VoiceStore
+
+    from .models import missing_models
+
+    config = _require_config()
+    # An install problem must not mark recordings as failed: check first
+    missing = missing_models(config)
+    if missing:
+        console.print(f"{FAIL} Model(s) not downloaded: {', '.join(missing)}")
+        console.print("   Run [bold]agscribe download-models[/bold] (needs the Hugging Face token: agscribe configure)")
+        raise typer.Exit(1)
+    everything = rec.discover(config)
+
+    if names:
+        try:
+            requested = rec.find(config, names)
+        except LookupError as exc:
+            console.print(f"{FAIL} {exc}")
+            raise typer.Exit(1) from exc
+        selected = []
+        for recording in requested:
+            status = recording.status()
+            if status == rec.IN_PROGRESS:
+                console.print(f"{WARN} {recording.name} is still being recorded: skipped")
+            elif status == rec.DONE and not force:
+                console.print(f"{WARN} {recording.name} is already transcribed (use --force to redo it)")
+            else:
+                selected.append(recording)
+    else:
+        if force:
+            console.print(f"{FAIL} --force needs the recording(s) to redo, e.g. agscribe transcribe --force Recording_...")
+            raise typer.Exit(1)
+        selected = [r for r in everything if r.status() in (rec.NEW, rec.FAILED)]
+        recording_now = [r for r in everything if r.status() == rec.IN_PROGRESS]
+        for recording in recording_now:
+            console.print(f"{WARN} {recording.name} is still being recorded: skipped")
+
+    if not selected:
+        console.print(f"{OK} Nothing new to transcribe ({len(everything)} recording(s) in {config.recordings_path})")
+        return
+
+    # What will be done, and how long it should take
+    speed = seconds_per_audio_second(config)
+    table = Table(show_header=True, header_style="bold", box=None, padding=(0, 2))
+    table.add_column("Recording")
+    table.add_column("Length", justify="right")
+    table.add_column("Estimate", justify="right")
+    total = 0.0
+    for recording in selected:
+        duration = audio_duration(recording)
+        estimate = duration * speed if duration else None
+        total += estimate or 0
+        status = " (retry)" if recording.status() == rec.FAILED else ""
+        table.add_row(
+            recording.name + status,
+            short_duration(duration) if duration else "?",
+            f"~{_human_minutes(estimate)}" if estimate else "?",
+        )
+    console.print(table)
+    console.print(f"Estimated total: ~{_human_minutes(total + 30)}  [dim](CPU only; the estimate improves after each run)[/dim]")
+
+    if not yes:
+        if not sys.stdin.isatty():
+            console.print(f"{FAIL} Not running in a terminal: add --yes to start without confirmation")
+            raise typer.Exit(1)
+        if not Confirm.ask(f"Transcribe {len(selected)} recording(s)?", default=True):
+            raise typer.Exit(0)
+
+    loaded = Models(config, cfg.load_token())
+    store = VoiceStore(config.data_path)
+    done, failed = [], []
+    columns = [TextColumn("{task.description}"), BarColumn(), TaskProgressColumn(), TimeElapsedColumn()]
+    with Progress(*columns, console=console, transient=True) as progress_bar:
+        for recording in selected:
+            task = progress_bar.add_task(recording.name, total=None)
+
+            def report(phase: str, fraction: float | None, task=task, name=recording.name) -> None:
+                progress_bar.update(
+                    task,
+                    description=f"{name}: {phase}",
+                    total=100 if fraction is not None else None,
+                    completed=(fraction or 0) * 100,
+                )
+
+            try:
+                state = transcribe_recording(recording, everything, config, loaded, store, report)
+            except KeyboardInterrupt:
+                progress_bar.stop()
+                console.print(f"\n{WARN} Interrupted: {recording.name} will be transcribed again next time")
+                raise typer.Exit(130) from None
+            except Exception as exc:  # noqa: BLE001 - report and continue with the next one
+                recording.data_dir.mkdir(parents=True, exist_ok=True)
+                (recording.data_dir / "error.log").write_text(traceback.format_exc(), encoding="utf-8")
+                rec.write_json(recording.state_file, {
+                    "status": rec.FAILED,
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "updated": datetime.now().isoformat(timespec="seconds"),
+                })
+                progress_bar.console.print(f"{FAIL} {recording.name}: {type(exc).__name__}: {exc}")
+                progress_bar.console.print(f"   [dim]details: {recording.data_dir / 'error.log'}[/dim]")
+                failed.append(recording)
+                continue
+            finally:
+                progress_bar.remove_task(task)
+
+            speakers = rec.read_json(recording.data_dir / "speakers.json") or {}
+            to_identify, to_confirm = pending(speakers)
+            todo = []
+            if to_identify:
+                todo.append(f"{to_identify} to identify")
+            if to_confirm:
+                todo.append(f"{to_confirm} to confirm")
+            progress_bar.console.print(
+                f"{OK} {recording.name} -> {state['transcript_file']}  "
+                f"[dim]({len(speakers)} speaker(s){': ' + ', '.join(todo) if todo else ''}; "
+                f"took {_human_minutes(state['processing_seconds'])})[/dim]"
+            )
+            done.append((recording, to_identify + to_confirm))
+
+    console.print(f"\nTranscripts: {config.transcripts_path}")
+    if any(count for _, count in done):
+        console.print("Some speakers need a name: run [bold]agscribe name[/bold]")
+    if failed:
+        console.print(f"{FAIL} {len(failed)} recording(s) failed; they'll be retried next time")
+        raise typer.Exit(1)
+
+
+def _human_minutes(seconds: float | None) -> str:
+    if seconds is None:
+        return "?"
+    if seconds < 90:
+        return f"{max(1, round(seconds))} s"
+    minutes = round(seconds / 60)
+    return f"{minutes} min" if minutes < 60 else f"{minutes // 60} h {minutes % 60:02d} min"
+
+
+# ------------------------------------------------------------------------------ status
+
+
+@app.command()
+def status() -> None:
+    """List recordings: new, being recorded, transcribed, speakers to name, failed."""
+    from rich.table import Table
+
+    from . import recordings as rec
+    from .pipeline import audio_duration
+    from .render import pending, short_duration
+
+    config = _require_config()
+    everything = rec.discover(config)
+    if not everything:
+        console.print(f"No recordings in {config.recordings_path}")
+        return
+
+    table = Table(header_style="bold", box=None, padding=(0, 2))
+    for column in ("Recording", "Length", "Status", "Transcript"):
+        table.add_column(column)
+    for recording in everything:
+        state = recording.state() or {}
+        status_ = recording.status()
+        duration = state.get("duration") or audio_duration(recording)
+        if status_ == rec.DONE:
+            speakers = rec.read_json(recording.data_dir / "speakers.json") or {}
+            to_identify, to_confirm = pending(speakers)
+            if to_identify or to_confirm:
+                label = f"[yellow]to name ({to_identify + to_confirm})[/yellow]"
+            else:
+                label = "[green]done[/green]"
+        elif status_ == rec.FAILED:
+            error_type = (state.get("error") or "").split(":")[0]
+            label = f"[red]failed[/red] [dim]{error_type}[/dim]"
+        elif status_ == rec.IN_PROGRESS:
+            label = "[blue]recording...[/blue]"
+        else:
+            label = "new"
+        table.add_row(
+            recording.name,
+            short_duration(duration) if duration else "?",
+            label,
+            state.get("transcript_file", ""),
+        )
+    console.print(table)
+    if any(r.status() == rec.FAILED for r in everything):
+        console.print("[dim]Failed recordings are retried by agscribe transcribe; details in "
+                      "transcripts-data/recordings/<name>/error.log[/dim]")
+    console.print(f"[dim]Recordings: {config.recordings_path}\nTranscripts: {config.transcripts_path}[/dim]")
+
+
+# ------------------------------------------------------------------------------ render
+
+
+@app.command()
+def render(
+    names: list[str] = typer.Argument(None, help="Recordings to render (default: all transcribed)."),
+) -> None:
+    """Regenerate the Markdown transcripts from saved data (no new transcription)."""
+    from . import recordings as rec
+    from .pipeline import render_recording
+    from .voices import VoiceStore
+
+    config = _require_config()
+    try:
+        targets = rec.find(config, names) if names else rec.discover(config)
+    except LookupError as exc:
+        console.print(f"{FAIL} {exc}")
+        raise typer.Exit(1) from exc
+    store = VoiceStore(config.data_path)
+    count = 0
+    for recording in targets:
+        filename = render_recording(recording, config, store)
+        if filename:
+            count += 1
+            console.print(f"{OK} {filename}")
+        elif names:
+            console.print(f"{WARN} {recording.name} isn't transcribed yet")
+    console.print(f"{count} transcript(s) written to {config.transcripts_path}")

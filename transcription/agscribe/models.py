@@ -67,6 +67,23 @@ def download_models(config: Config, token: str) -> None:
     snapshot_download(config.diarization_model, token=token)
 
 
+def missing_models(config: Config) -> list[str]:
+    """Models not in the local cache (i.e. download-models hasn't been run)."""
+    from faster_whisper.utils import download_model
+    from huggingface_hub import snapshot_download
+
+    missing = []
+    try:
+        download_model(config.whisper_model, local_files_only=True)
+    except Exception:  # noqa: BLE001 - any failure means "not usable offline"
+        missing.append(config.whisper_model)
+    try:
+        snapshot_download(config.diarization_model, local_files_only=True)
+    except Exception:  # noqa: BLE001
+        missing.append(config.diarization_model)
+    return missing
+
+
 def cpu_threads() -> int:
     import torch
 

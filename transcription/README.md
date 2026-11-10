@@ -43,8 +43,17 @@ Re-running `./setup.sh` is safe: it only does what's missing.
 | `agscribe configure` | Recordings and transcripts folders, token, audio playback (`--reconfigure` to change them) |
 | `agscribe download-models` | Download the models (done by setup) |
 | `agscribe doctor` | Check everything and transcribe a sample |
+| `agscribe transcribe` | Transcribe new recordings: lists them with an estimated time, asks, then runs (`--yes` to skip the question) |
+| `agscribe transcribe <recording>` | Transcribe specific recordings (`--force` to redo one already done) |
+| `agscribe status` | Every recording: new, recording..., done, to name, failed |
+| `agscribe render` | Regenerate the Markdown from saved data (e.g. after editing `people.json`) |
 
-Coming next: `transcribe`, `name`, `status`, `people`, `render`.
+Coming next: `name` (identify speakers), `people`.
+
+A recording is transcribed once: its state is kept in
+`transcripts-data/recordings/<name>/state.json`, so renaming, moving or deleting
+the Markdown never causes a new transcription. Recordings still being recorded
+are skipped; failed or interrupted ones are retried on the next run.
 
 ## Files
 

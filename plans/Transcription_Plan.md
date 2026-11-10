@@ -73,7 +73,27 @@ A single command, `agscribe`, installed by setup in `~/.local/bin`:
 
 ## Step 1 - Transcribe (`agscribe transcribe`)
 
-For each MP3 in the recordings folder that has no transcript yet:
+### Which recordings
+
+Each recording's state lives in `transcripts-data/recordings/<name>/state.json`,
+not in the Markdown (renaming, moving or deleting a transcript never triggers a
+new transcription):
+
+| State | `agscribe transcribe` |
+|---|---|
+| no state file | new: transcribed |
+| still being recorded (`.log` without "Session completed"; without a log: MP3 changed in the last 2 min) | skipped |
+| `done` | skipped (`--force <recording>` redoes it; `render` regenerates the Markdown) |
+| `failed` (error + `error.log`) | retried |
+| interrupted (Ctrl+C, crash, sleep) | retried: `state.json` is written last |
+
+Before starting, it lists the recordings with an estimated time (learned from
+previous runs) and asks for confirmation (`--yes` to skip). Missing models are
+reported up front, without marking recordings as failed.
+
+### Steps
+
+For each selected recording:
 
 1. **Skip recordings in progress**: only process an MP3 whose `.log` says the
    session completed (or, without a log, unchanged for 2 minutes).
