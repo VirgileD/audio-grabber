@@ -9,11 +9,9 @@ namespace AudioGrabber.Models;
 public class AppSettings
 {
     // Recording Settings
-    // Default to a local, non-synced folder: OneDrive-synced folders (like Documents)
-    // can stall file writes while recording. Falls back to Documents if there is no D: drive.
-    public string OutputFolder { get; set; } = Directory.Exists(@"D:\")
-        ? @"D:\Projects\audio-grabber"
-        : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "AudioGrabber");
+    // Default: the folder containing AudioGrabber.exe. Avoid OneDrive-synced folders
+    // (like Documents): syncing can stall file writes while recording.
+    public string OutputFolder { get; set; } = Path.TrimEndingDirectorySeparator(AppContext.BaseDirectory);
     
     public string FileNamePattern { get; set; } = "Recording_{0:yyyy-MM-dd_HHmmss}.mp3";
     

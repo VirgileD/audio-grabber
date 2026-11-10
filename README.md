@@ -141,7 +141,7 @@ dotnet run --project AudioGrabber/AudioGrabber.csproj --configuration Release
 3. Both system audio and microphone are now being recorded
 4. Press **Ctrl+R** again to stop recording
 5. The tray icon returns to **gray** and you'll hear another beep sound
-6. Recordings are saved to `D:\Projects\audio-grabber` by default (`Documents\AudioGrabber` if there is no D: drive)
+6. Recordings are saved next to `AudioGrabber.exe` by default (change it in Settings)
 
 ### How Recording Works
 - System audio is captured from the default output device (WASAPI loopback). While
@@ -230,7 +230,7 @@ Session completed successfully
 
 ## Default Settings
 
-- **Output Folder**: `D:\Projects\audio-grabber` (or `%USERPROFILE%\Documents\AudioGrabber` without a D: drive)
+- **Output Folder**: the folder containing `AudioGrabber.exe`
 - **File Pattern**: `Recording_{0:yyyy-MM-dd_HHmmss}.mp3`
 - **Audio Format**: MP3 128 kbps, system sample rate, stereo
 - **Hotkey**: Ctrl+R
@@ -241,6 +241,24 @@ Session completed successfully
 
 - **Settings File**: `%APPDATA%\AudioGrabber\settings.json`
 - **Registry Entry**: `HKEY_CURRENT_USER\SOFTWARE\Microsoft\Windows\CurrentVersion\Run\AudioGrabber`
+
+The settings file can be edited by hand while the app is closed:
+
+```json
+{
+  "OutputFolder": "C:\\Tools\\AudioGrabber",
+  "FileNamePattern": "Recording_{0:yyyy-MM-dd_HHmmss}.mp3",
+  "Hotkey": "Ctrl+R",
+  "ShowNotifications": true,
+  "StartWithWindows": true
+}
+```
+
+- `OutputFolder`: where recordings go (default: the folder containing `AudioGrabber.exe`)
+- `FileNamePattern`: file name; `{0:...}` is the recording start date/time
+- `Hotkey`: modifiers `Ctrl`, `Alt`, `Shift`, `Win` plus a key name, e.g. `Ctrl+Shift+F9`
+- `ShowNotifications`: show error popups
+- `StartWithWindows`: launch at Windows sign-in
 
 ## Icon States
 
