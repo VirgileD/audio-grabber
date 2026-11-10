@@ -250,22 +250,7 @@ public partial class SettingsForm : Form
     
     private void UpdateHotkeyDisplay()
     {
-        var modifiers = new List<string>();
-        
-        if ((_workingSettings.HotkeyModifiers & KeyModifiers.Control) != 0)
-            modifiers.Add("Ctrl");
-        if ((_workingSettings.HotkeyModifiers & KeyModifiers.Alt) != 0)
-            modifiers.Add("Alt");
-        if ((_workingSettings.HotkeyModifiers & KeyModifiers.Shift) != 0)
-            modifiers.Add("Shift");
-        if ((_workingSettings.HotkeyModifiers & KeyModifiers.Win) != 0)
-            modifiers.Add("Win");
-        
-        var hotkeyText = modifiers.Count > 0
-            ? $"{string.Join("+", modifiers)}+{_workingSettings.HotkeyKey}"
-            : _workingSettings.HotkeyKey.ToString();
-        
-        _hotkeyTextBox.Text = hotkeyText;
+        _hotkeyTextBox.Text = HotkeyText.Format(_workingSettings.HotkeyKey, _workingSettings.HotkeyModifiers);
     }
     
     private void UpdateFileNamePreview()

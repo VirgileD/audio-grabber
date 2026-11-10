@@ -1,4 +1,6 @@
+using System.Text.Encodings.Web;
 using System.Text.Json;
+using System.Windows.Forms;
 using AudioGrabber.Models;
 
 namespace AudioGrabber.Services;
@@ -26,6 +28,43 @@ public class ConfigurationManager
     }
     
     /// <summary>
+    /// Older settings files stored the hotkey as numbers ("HotkeyKey": 82,
+    /// "HotkeyModifiers": 2). Carry such a hotkey over when there is no "Hotkey"
+    /// text yet; it is written back in the new format on the next save.
+    /// </summary>
+    private static void MigrateNumericHotkey(string json, AppSettings settings)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            var root = document.RootElement;
+            if (root.TryGetProperty("Hotkey", out _)
+                || !root.TryGetProperty("HotkeyKey", out var keyElement)
+                || !keyElement.TryGetInt32(out var keyValue))
+            {
+                return;
+            }
+
+            var modifiers = KeyModifiers.None;
+            if (root.TryGetProperty("HotkeyModifiers", out var modifiersElement)
+                && modifiersElement.TryGetInt32(out var modifiersValue))
+            {
+                modifiers = (KeyModifiers)modifiersValue;
+            }
+
+            var text = HotkeyText.Format((Keys)keyValue, modifiers);
+            if (HotkeyText.TryParse(text, out _, out _))
+            {
+                settings.Hotkey = text;
+            }
+        }
+        catch (JsonException)
+        {
+            // Unreadable file: handled by the normal loading path
+        }
+    }
+
+    /// <summary>
     /// Load settings from JSON file
     /// </summary>
     public void LoadSettings()
@@ -39,6 +78,8 @@ public class ConfigurationManager
                 
                 if (loadedSettings != null)
                 {
+                    MigrateNumericHotkey(json, loadedSettings);
+
                     // Validate loaded settings
                     if (string.IsNullOrWhiteSpace(loadedSettings.OutputFolder))
                     {
@@ -118,7 +159,9 @@ public class ConfigurationManager
             
             var options = new JsonSerializerOptions
             {
-                WriteIndented = true
+                WriteIndented = true,
+                // Keep the file readable: write "Ctrl+R", not "Ctrl+R"
+                Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
             };
             
             var json = JsonSerializer.Serialize(Settings, options);
