@@ -1,6 +1,7 @@
+using System.Collections.Concurrent;
+using System.Runtime.InteropServices;
 using NAudio.CoreAudioApi;
 using NAudio.Wave;
-using NAudio.Wave.SampleProviders;
 using NAudio.Lame;
 
 namespace AudioGrabber.Services;
@@ -32,7 +33,6 @@ public class AudioRecorderService : IDisposable
     private WaveInEvent? _microphoneCapture;          // Microphone
     private MMDevice? _renderDevice;                  // Output device being captured
     private WasapiOut? _silencePlayer;                // Keeps loopback flowing (see StartSilencePlayer)
-    private BufferedWaveProvider? _loopbackBuffer;
     private BufferedWaveProvider? _microphoneBuffer;
     private WaveFormat? _microphoneFormat;
 
@@ -41,19 +41,31 @@ public class AudioRecorderService : IDisposable
     private const int MicDriftToleranceMs = 40;
     private bool _micPrimed;
     private int _micUnderruns;
+
+    // Scratch buffers reused across audio callbacks (only touched under _lockObject)
+    private float[] _micSamples = Array.Empty<float>();
+    private byte[] _micRaw = Array.Empty<byte>();
+
+    // MP3 encoding and disk writes happen on a dedicated thread, so a slow encode,
+    // a GC pause or a disk stall never blocks the audio capture callback (which
+    // would make Windows drop audio).
     private LameMP3FileWriter? _writer;
+    private BlockingCollection<byte[]>? _writeQueue;
+    private Thread? _writerThread;
+
     private RecordingLogger? _logger;
+    private SynchronizationContext? _syncContext;
     private DateTime _recordingStartTime;
     private long _bytesRecorded;
     private bool _microphoneAvailable;
     private readonly object _lockObject = new object();
-    
+
     public event EventHandler<RecordingStateChangedEventArgs>? StateChanged;
     public event EventHandler<RecordingErrorEventArgs>? ErrorOccurred;
-    
+
     public bool IsRecording { get; private set; }
     public string? CurrentRecordingPath { get; private set; }
-    
+
     /// <summary>
     /// Start recording audio (system audio + microphone)
     /// </summary>
@@ -65,22 +77,25 @@ public class AudioRecorderService : IDisposable
             {
                 throw new InvalidOperationException("Recording is already in progress");
             }
-            
+
+            // Events are raised back on the caller's (UI) thread
+            _syncContext = SynchronizationContext.Current;
+
             // Ensure output directory exists
             var directory = Path.GetDirectoryName(outputPath);
             if (!string.IsNullOrEmpty(directory))
             {
                 Directory.CreateDirectory(directory);
             }
-            
+
             // Initialize logger first
             _logger = new RecordingLogger();
-            
+
             // Initialize loopback capture (system audio)
             _renderDevice = WasapiLoopbackCapture.GetDefaultLoopbackCaptureDevice();
             _loopbackCapture = new WasapiLoopbackCapture(_renderDevice);
             var loopbackFormat = _loopbackCapture.WaveFormat;
-            
+
             // Try to initialize microphone capture
             _microphoneAvailable = false;
             try
@@ -100,21 +115,30 @@ public class AudioRecorderService : IDisposable
                 _logger.LogInfo("Falling back to system audio only");
                 _microphoneCapture = null;
             }
-            
-            // Create MP3 file writer with loopback format (128 kbps)
-            _writer = new LameMP3FileWriter(outputPath, loopbackFormat, 128);
-            
+
+            // Create MP3 file writer with loopback format (128 kbps), fed by the writer thread
+            var writer = new LameMP3FileWriter(outputPath, loopbackFormat, 128);
+            var writeQueue = new BlockingCollection<byte[]>();
+            _writer = writer;
+            _writeQueue = writeQueue;
+            _writerThread = new Thread(() => WriterLoop(writeQueue, writer))
+            {
+                Name = "AudioGrabber MP3 writer",
+                IsBackground = true
+            };
+            _writerThread.Start();
+
             // Start logger session
             _logger.StartSession(outputPath, loopbackFormat);
-            
+
             // Log audio sources
             _logger.LogInfo($"System Audio Device: {_loopbackCapture.GetType().Name}");
             if (_microphoneAvailable && _microphoneCapture != null)
             {
                 _logger.LogInfo($"Microphone Device: {_microphoneCapture.GetType().Name}");
                 _logger.LogInfo("Mixing Mode: System Audio + Microphone");
-                
-                // Create buffer for microphone (will be resampled/mixed with loopback)
+
+                // Create buffer for microphone (will be mixed with loopback)
                 _microphoneFormat = _microphoneCapture.WaveFormat;
                 _microphoneBuffer = new BufferedWaveProvider(_microphoneFormat)
                 {
@@ -125,7 +149,7 @@ public class AudioRecorderService : IDisposable
                 };
                 _micPrimed = false;
                 _micUnderruns = 0;
-                
+
                 // Wire up microphone data handler
                 _microphoneCapture.DataAvailable += OnMicrophoneDataAvailable;
             }
@@ -133,16 +157,16 @@ public class AudioRecorderService : IDisposable
             {
                 _logger.LogInfo("Mixing Mode: System Audio Only (Microphone not available)");
             }
-            
+
             // Wire up loopback data available event
             _loopbackCapture.DataAvailable += OnLoopbackDataAvailable;
             _loopbackCapture.RecordingStopped += OnRecordingStopped;
-            
+
             // Start recording
             CurrentRecordingPath = outputPath;
             _recordingStartTime = DateTime.Now;
             _bytesRecorded = 0;
-            
+
             // Start both captures
             StartSilencePlayer(_renderDevice, loopbackFormat);
             _loopbackCapture.StartRecording();
@@ -150,9 +174,9 @@ public class AudioRecorderService : IDisposable
             {
                 _microphoneCapture.StartRecording();
             }
-            
+
             IsRecording = true;
-            
+
             StateChanged?.Invoke(this, new RecordingStateChangedEventArgs
             {
                 IsRecording = true,
@@ -164,18 +188,14 @@ public class AudioRecorderService : IDisposable
             _logger?.LogError("Failed to start recording", ex);
             _logger?.Dispose();
             _logger = null;
-            
-            ErrorOccurred?.Invoke(this, new RecordingErrorEventArgs
-            {
-                Message = "Failed to start recording",
-                Exception = ex
-            });
-            
+
+            RaiseError("Failed to start recording", ex);
+
             Cleanup();
             throw;
         }
     }
-    
+
     /// <summary>
     /// Stop recording audio
     /// </summary>
@@ -187,28 +207,22 @@ public class AudioRecorderService : IDisposable
             {
                 return;
             }
-            
+
             // Stop captures
             _silencePlayer?.Stop();
             _loopbackCapture?.StopRecording();
             _microphoneCapture?.StopRecording();
-            
+
             // Cleanup will be called in OnRecordingStopped event
         }
         catch (Exception ex)
         {
             _logger?.LogError("Error stopping recording", ex);
-            
-            ErrorOccurred?.Invoke(this, new RecordingErrorEventArgs
-            {
-                Message = "Error stopping recording",
-                Exception = ex
-            });
-            
+            RaiseError("Error stopping recording", ex);
             Cleanup();
         }
     }
-    
+
     /// <summary>
     /// Windows only delivers loopback audio while something is playing: during
     /// silence the capture simply produces no data. Since the recording is driven
@@ -234,45 +248,77 @@ public class AudioRecorderService : IDisposable
         }
     }
 
+    /// <summary>
+    /// Capture callback: mix and hand the chunk to the writer thread. Must stay
+    /// fast - no encoding or disk I/O here.
+    /// </summary>
     private void OnLoopbackDataAvailable(object? sender, WaveInEventArgs e)
     {
         try
         {
-            if (_writer != null && e.BytesRecorded > 0)
+            if (e.BytesRecorded <= 0)
             {
-                lock (_lockObject)
+                return;
+            }
+
+            lock (_lockObject)
+            {
+                if (_writeQueue == null || _writeQueue.IsAddingCompleted)
                 {
-                    // If microphone is available, mix it with loopback
-                    if (_microphoneAvailable && _microphoneBuffer != null)
-                    {
-                        // Read microphone data and mix with loopback
-                        var mixedBuffer = MixAudioData(e.Buffer, e.BytesRecorded);
-                        _writer.Write(mixedBuffer, 0, mixedBuffer.Length);
-                        _bytesRecorded += mixedBuffer.Length;
-                    }
-                    else
-                    {
-                        // No microphone, just write loopback data
-                        _writer.Write(e.Buffer, 0, e.BytesRecorded);
-                        _bytesRecorded += e.BytesRecorded;
-                    }
+                    return;
                 }
+
+                // NAudio reuses e.Buffer, so the queued chunk must be a copy
+                byte[] chunk = new byte[e.BytesRecorded];
+                if (_microphoneAvailable && _microphoneBuffer != null)
+                {
+                    MixAudioData(e.Buffer.AsSpan(0, e.BytesRecorded), chunk);
+                }
+                else
+                {
+                    Buffer.BlockCopy(e.Buffer, 0, chunk, 0, e.BytesRecorded);
+                }
+
+                _writeQueue.Add(chunk);
+                _bytesRecorded += chunk.Length;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError("Error processing audio data", ex);
+            RaiseError("Error processing audio data", ex);
+            StopRecording();
+        }
+    }
+
+    /// <summary>
+    /// Writer thread: encodes queued chunks to MP3 until the queue is completed.
+    /// </summary>
+    private void WriterLoop(BlockingCollection<byte[]> queue, LameMP3FileWriter writer)
+    {
+        try
+        {
+            foreach (var chunk in queue.GetConsumingEnumerable())
+            {
+                writer.Write(chunk, 0, chunk.Length);
             }
         }
         catch (Exception ex)
         {
             _logger?.LogError("Error writing audio data", ex);
-            
-            ErrorOccurred?.Invoke(this, new RecordingErrorEventArgs
+            RaiseError("Error writing audio data", ex);
+            // Stop accepting audio; stopping the captures must happen on the UI thread
+            lock (_lockObject)
             {
-                Message = "Error writing audio data",
-                Exception = ex
-            });
-            
-            StopRecording();
+                if (!queue.IsAddingCompleted)
+                {
+                    queue.CompleteAdding();
+                }
+            }
+            PostToUi(StopRecording);
         }
     }
-    
+
     private void OnMicrophoneDataAvailable(object? sender, WaveInEventArgs e)
     {
         try
@@ -287,44 +333,35 @@ public class AudioRecorderService : IDisposable
             _logger?.LogError("Error buffering microphone audio data", ex);
         }
     }
-    
-    private byte[] MixAudioData(byte[] loopbackData, int loopbackBytes)
+
+    /// <summary>
+    /// Mix a chunk of loopback audio (32-bit float) with the microphone into output.
+    /// </summary>
+    private void MixAudioData(ReadOnlySpan<byte> loopbackData, Span<byte> output)
     {
-        // Get as many microphone samples as the loopback chunk holds. The mic is 16-bit
-        // (2 bytes/sample) while loopback is 32-bit float (4 bytes/sample).
-        var micSamples = ReadMicrophoneSamples(loopbackBytes / 4);
+        var loopbackSamples = MemoryMarshal.Cast<byte, float>(loopbackData);
+        var outputSamples = MemoryMarshal.Cast<byte, float>(output);
+        int sampleCount = loopbackSamples.Length;
 
-        // Mix the audio (simple addition with clipping prevention)
-        var mixedData = new byte[loopbackBytes];
-
-        // Assuming 32-bit float format from loopback
-        for (int i = 0; i < loopbackBytes; i += 4)
+        if (_micSamples.Length < sampleCount)
         {
-            if (i + 3 < loopbackBytes)
-            {
-                // Read loopback sample (32-bit float)
-                float loopbackSample = BitConverter.ToSingle(loopbackData, i);
-
-                // Microphone sample, already converted to float (-1.0 to 1.0)
-                float micSample = micSamples[i / 4];
-
-                // Mix samples (average to prevent clipping)
-                float mixedSample = (loopbackSample + micSample) * 0.5f;
-                
-                // Clamp to prevent clipping
-                mixedSample = Math.Max(-1.0f, Math.Min(1.0f, mixedSample));
-                
-                // Write mixed sample
-                byte[] sampleBytes = BitConverter.GetBytes(mixedSample);
-                Array.Copy(sampleBytes, 0, mixedData, i, 4);
-            }
+            _micSamples = new float[sampleCount];
         }
-        
-        return mixedData;
+        var micSamples = _micSamples.AsSpan(0, sampleCount);
+        ReadMicrophoneSamples(micSamples);
+
+        for (int i = 0; i < sampleCount; i++)
+        {
+            // Mix samples (average to prevent clipping)
+            float mixedSample = (loopbackSamples[i] + micSamples[i]) * 0.5f;
+
+            // Clamp to prevent clipping
+            outputSamples[i] = Math.Clamp(mixedSample, -1.0f, 1.0f);
+        }
     }
 
     /// <summary>
-    /// Read microphone audio through a jitter buffer.
+    /// Read microphone audio through a jitter buffer, as floats (-1.0 to 1.0).
     ///
     /// The mic delivers audio in ~50 ms chunks, while loopback asks for ~10 ms at a
     /// time, and the two devices run on independent clocks. So instead of reading
@@ -335,22 +372,22 @@ public class AudioRecorderService : IDisposable
     ///    sample frame per chunk when it drifts (inaudible, ~0.2% at most);
     ///  - only go silent (and re-prime) if the mic truly stops delivering.
     /// </summary>
-    private float[] ReadMicrophoneSamples(int sampleCount)
+    private void ReadMicrophoneSamples(Span<float> samples)
     {
-        var samples = new float[sampleCount];
+        samples.Clear();
         var buffer = _microphoneBuffer;
         var format = _microphoneFormat;
         if (buffer == null || format == null)
         {
-            return samples;
+            return;
         }
 
         int channels = format.Channels;
         int bytesPerFrame = format.BlockAlign;
-        int frames = sampleCount / channels;
+        int frames = samples.Length / channels;
         if (frames == 0)
         {
-            return samples;
+            return;
         }
 
         int bufferedFrames = buffer.BufferedBytes / bytesPerFrame;
@@ -361,7 +398,7 @@ public class AudioRecorderService : IDisposable
         {
             if (bufferedFrames < targetFrames)
             {
-                return samples; // still filling the jitter buffer: mic contributes silence
+                return; // still filling the jitter buffer: mic contributes silence
             }
             _micPrimed = true;
         }
@@ -378,8 +415,12 @@ public class AudioRecorderService : IDisposable
             framesToRead = frames - 1;
         }
 
-        var raw = new byte[framesToRead * bytesPerFrame];
-        int framesRead = buffer.Read(raw, 0, raw.Length) / bytesPerFrame;
+        int rawLength = framesToRead * bytesPerFrame;
+        if (_micRaw.Length < rawLength)
+        {
+            _micRaw = new byte[rawLength];
+        }
+        int framesRead = buffer.Read(_micRaw, 0, rawLength) / bytesPerFrame;
         if (framesRead < framesToRead)
         {
             // Mic stopped delivering: the missing part stays silent; wait for the
@@ -387,6 +428,8 @@ public class AudioRecorderService : IDisposable
             _micPrimed = false;
             _micUnderruns++;
         }
+
+        var micPcm = MemoryMarshal.Cast<byte, short>(_micRaw.AsSpan(0, framesRead * bytesPerFrame));
 
         // Map output frames onto the frames read (nearest neighbour), which drops
         // or repeats exactly one frame when framesToRead differs from frames.
@@ -399,27 +442,19 @@ public class AudioRecorderService : IDisposable
             }
             for (int ch = 0; ch < channels; ch++)
             {
-                short value = BitConverter.ToInt16(raw, sourceFrame * bytesPerFrame + ch * 2);
-                samples[frame * channels + ch] = value / 32768f;
+                samples[frame * channels + ch] = micPcm[sourceFrame * channels + ch] / 32768f;
             }
         }
-
-        return samples;
     }
 
     private void OnRecordingStopped(object? sender, StoppedEventArgs e)
     {
         var duration = DateTime.Now - _recordingStartTime;
-        
+
         if (e.Exception != null)
         {
             _logger?.LogError("Recording stopped due to error", e.Exception);
-            
-            ErrorOccurred?.Invoke(this, new RecordingErrorEventArgs
-            {
-                Message = "Recording stopped due to error",
-                Exception = e.Exception
-            });
+            RaiseError("Recording stopped due to error", e.Exception);
         }
         else
         {
@@ -429,20 +464,46 @@ public class AudioRecorderService : IDisposable
             }
             _logger?.EndSession(_bytesRecorded, duration);
         }
-        
+
         Cleanup();
-        
+
         StateChanged?.Invoke(this, new RecordingStateChangedEventArgs
         {
             IsRecording = false,
             FilePath = CurrentRecordingPath
         });
     }
-    
+
+    /// <summary>
+    /// Raise ErrorOccurred on the UI thread. Handlers show message boxes, which
+    /// must never block an audio or writer thread.
+    /// </summary>
+    private void RaiseError(string message, Exception? ex)
+    {
+        PostToUi(() => ErrorOccurred?.Invoke(this, new RecordingErrorEventArgs
+        {
+            Message = message,
+            Exception = ex
+        }));
+    }
+
+    private void PostToUi(Action action)
+    {
+        var context = _syncContext;
+        if (context == null || SynchronizationContext.Current == context)
+        {
+            action();
+        }
+        else
+        {
+            context.Post(_ => action(), null);
+        }
+    }
+
     private void Cleanup()
     {
         IsRecording = false;
-        
+
         // Dispose silence keep-alive
         _silencePlayer?.Dispose();
         _silencePlayer = null;
@@ -455,7 +516,7 @@ public class AudioRecorderService : IDisposable
             _loopbackCapture.Dispose();
             _loopbackCapture = null;
         }
-        
+
         // Dispose microphone capture
         if (_microphoneCapture != null)
         {
@@ -463,33 +524,57 @@ public class AudioRecorderService : IDisposable
             _microphoneCapture.Dispose();
             _microphoneCapture = null;
         }
-        
+
         _renderDevice?.Dispose();
         _renderDevice = null;
+
+        // Stop accepting audio, let the writer thread drain the queue, then close
+        // the MP3 file. The lock guarantees no capture callback is mid-enqueue.
+        BlockingCollection<byte[]>? writeQueue;
+        lock (_lockObject)
+        {
+            writeQueue = _writeQueue;
+            _writeQueue = null;
+            if (writeQueue != null && !writeQueue.IsAddingCompleted)
+            {
+                writeQueue.CompleteAdding();
+            }
+        }
+        if (_writerThread != null && _writerThread != Thread.CurrentThread)
+        {
+            _writerThread.Join();
+        }
+        _writerThread = null;
+        writeQueue?.Dispose();
+        try
+        {
+            _writer?.Dispose(); // flushes the last MP3 frames
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError("Error finalizing MP3 file", ex);
+        }
+        _writer = null;
 
         // Dispose buffers
         _microphoneBuffer = null;
         _microphoneFormat = null;
 
-        // Dispose writer
-        _writer?.Dispose();
-        _writer = null;
-        
         // Dispose logger
         _logger?.Dispose();
         _logger = null;
-        
+
         CurrentRecordingPath = null;
         _microphoneAvailable = false;
     }
-    
+
     public void Dispose()
     {
         if (IsRecording)
         {
             StopRecording();
         }
-        
+
         Cleanup();
     }
 }
