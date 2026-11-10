@@ -178,7 +178,9 @@ public class AudioGrabberApplicationContext : ApplicationContext
                 // Check if file already exists (shouldn't happen with timestamp, but be safe)
                 if (File.Exists(filePath))
                 {
-                    fileName = string.Format(settings.FileNamePattern, DateTime.Now) + "_" + Guid.NewGuid().ToString("N").Substring(0, 8);
+                    // Add the suffix before the extension (it used to land after ".mp3")
+                    var suffix = "_" + Guid.NewGuid().ToString("N").Substring(0, 8);
+                    fileName = Path.GetFileNameWithoutExtension(fileName) + suffix + Path.GetExtension(fileName);
                     filePath = Path.Combine(settings.OutputFolder, fileName);
                 }
                 

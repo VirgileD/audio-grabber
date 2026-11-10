@@ -458,9 +458,6 @@ public partial class SettingsForm : Form
         {
             OutputFolder = source.OutputFolder,
             FileNamePattern = source.FileNamePattern,
-            SampleRate = source.SampleRate,
-            BitsPerSample = source.BitsPerSample,
-            Channels = source.Channels,
             HotkeyKey = source.HotkeyKey,
             HotkeyModifiers = source.HotkeyModifiers,
             ShowNotifications = source.ShowNotifications,
