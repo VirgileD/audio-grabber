@@ -6,12 +6,14 @@ who is speaking. Runs in WSL on the CPU. The full design is in
 
 ## Install (new WSL)
 
-In an Ubuntu WSL, from a normal terminal (the setup asks questions):
+Run the repository's `setup.sh` (in an Ubuntu WSL, from a normal terminal: it asks
+questions). It installs the AudioGrabber app first, then transcription:
 
 ```bash
-git clone <this repo> AudioGrabber
-cd AudioGrabber/transcription
-./setup.sh
+git clone git@github.com:VirgileD/audio-grabber.git AudioGrabber
+cd AudioGrabber
+./setup.sh              # app + transcription
+./setup.sh --skip-app   # transcription only
 ```
 
 Before (or while) running it, have a Hugging Face account ready:
@@ -20,7 +22,7 @@ Before (or while) running it, have a Hugging Face account ready:
 2. Accept the terms of https://huggingface.co/pyannote/speaker-diarization-community-1
 3. Create a *Read* token on https://huggingface.co/settings/tokens
 
-The setup:
+For transcription, the setup:
 
 - installs `ffmpeg` and `pulseaudio-utils` (asks for your sudo password once);
 - installs `uv` and a private Python 3.12 with CPU-only libraries (`.venv/`, ~1.6 GB);

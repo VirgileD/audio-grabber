@@ -85,6 +85,31 @@ AudioGrabber/
 └── .gitignore
 ```
 
+## Installing (from WSL)
+
+On the Windows machine that records, in an Ubuntu WSL, from a normal terminal:
+
+```bash
+git clone git@github.com:VirgileD/audio-grabber.git AudioGrabber
+cd AudioGrabber
+./setup.sh
+```
+
+`setup.sh` builds AudioGrabber (self-contained: Windows needs no .NET installed),
+installs it to `%USERPROFILE%\AudioGrabber`, starts it, then sets up the
+transcription tools (see [`transcription/README.md`](transcription/README.md)).
+Re-run it after a `git pull` to update: it stops the app, replaces it and restarts
+it, never touching the recordings in that folder.
+
+- `./setup.sh --app-only`: only the Windows app
+- `./setup.sh --skip-app`: only transcription
+- On failure it says what went wrong: compiler errors, or the Windows crash report
+  if the app doesn't start. Logs: `~/.cache/audiograbber-setup/`.
+
+Note: the app registers its own location to start with Windows each time it
+starts, so launching a dev build with `./run.sh` moves that to the dev folder;
+re-run `./setup.sh --app-only` to go back to the installed app.
+
 ## Building the Project
 
 ### Prerequisites

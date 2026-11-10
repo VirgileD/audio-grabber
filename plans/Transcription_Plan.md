@@ -25,8 +25,8 @@ identification that learns voices over time.
 
 ```
 AudioGrabber/                      (repo)
+├── setup.sh                       one-shot installer for the app + transcription (safe to re-run)
 └── transcription/
-    ├── setup.sh                   one-shot installer (idempotent: safe to re-run)
     ├── pyproject.toml / uv.lock   pinned Python dependencies
     ├── agscribe/                  Python package (CLI + pipeline)
     └── tests/
@@ -127,12 +127,15 @@ Recording_2026-11-12_100000 - Speaker 1 (6 min 20 s, 14 turns)
      (clip) - same person? [Y/n]`).
 - Email format is validated; names can be fixed later with `agscribe people`.
 
-## Setup (`transcription/setup.sh`)
+## Setup (`setup.sh` at the repo root)
 
-Goal: in a brand-new Ubuntu WSL, `git clone` + `./transcription/setup.sh` and it
+Goal: in a brand-new Ubuntu WSL, `git clone` + `./setup.sh` and it
 is ready for the next recording. Safe to re-run (it only does what's missing).
 
-1. Check: WSL + Ubuntu, disk space (~10 GB for models and libraries), internet.
+1. Check: WSL + Ubuntu, Windows interop, disk space (~10 GB), internet.
+   Then the **AudioGrabber app**: .NET 8 SDK (user-local), self-contained
+   single-file build, installed to `%USERPROFILE%\AudioGrabber`, started
+   (crash report from the Windows event log if it doesn't start).
 2. System packages (asks for the sudo password once): `ffmpeg` (decoding and
    `ffplay` for clips), `pulseaudio-utils` (audio check), build basics.
 3. `uv` (Python package manager) in `~/.local/bin`, then a project-local
