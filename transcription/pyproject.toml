@@ -1,0 +1,42 @@
+[project]
+name = "agscribe"
+version = "0.1.0"
+description = "Local transcription and speaker identification for AudioGrabber recordings (WSL)"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "faster-whisper>=1.2.1",
+    # faster-whisper 1.2.1 calls av.open(metadata_errors=...), removed in PyAV 19
+    "av>=11,<19",
+    "pyannote.audio>=4.0.7",
+    # CPU-only builds (see [tool.uv.sources]): the CUDA builds are several GB and
+    # there is no NVIDIA GPU on this machine.
+    "torch>=2.8",
+    "torchaudio>=2.8",
+    "numpy",
+    "typer>=0.15",
+    "rich>=13.9",
+    "prompt_toolkit>=3.0",
+    "tomli-w>=1.0",
+]
+
+[project.scripts]
+agscribe = "agscribe.cli:app"
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.uv]
+package = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+torchaudio = { index = "pytorch-cpu" }
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

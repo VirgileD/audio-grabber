@@ -98,3 +98,9 @@ $RECYCLE.BIN/
 
 # Mac desktop service store files
 .DS_Store
+
+# Python (transcription/)
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/

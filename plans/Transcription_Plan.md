@@ -10,7 +10,7 @@ identification that learns voices over time.
 | Where it runs | WSL (Ubuntu), CPU only (Ryzen 9 8945HS, no CUDA GPU) |
 | Speech-to-text | faster-whisper, model `large-v3-turbo`, int8 on CPU (~15-25 min per hour of audio) |
 | Language | Auto-detected per recording |
-| Who-spoke-when | pyannote `speaker-diarization-3.1` (free Hugging Face token, terms accepted once; runs offline afterwards) |
+| Who-spoke-when | pyannote 4 `speaker-diarization-community-1` (free Hugging Face token, terms accepted once on one page; runs offline afterwards) |
 | Voice recognition | Speaker embeddings (the model inside pyannote) compared with known voices |
 | Transcript format | Markdown, next to the MP3 |
 | Data location | With the recordings (Windows side), so it survives a WSL reinstall |
@@ -73,7 +73,7 @@ For each MP3 in the recordings folder that has no transcript yet:
 2. Decode to 16 kHz mono with ffmpeg.
 3. **Speech-to-text** with faster-whisper (voice-activity filter, word timestamps,
    language auto-detected).
-4. **Diarization** with pyannote: who spoke when (anonymous speakers A, B, C...).
+4. **Diarization** with pyannote (`community-1`): who spoke when (anonymous speakers A, B, C...).
 5. Assign each word to the speaker talking at that moment; group into turns.
 6. **Voice sample** per speaker: an embedding averaged over their clearest
    segments.
@@ -142,10 +142,10 @@ is ready for the next recording. Safe to re-run (it only does what's missing).
 5. **Recordings folder**: auto-detected from AudioGrabber's Windows settings
    (`%APPDATA%\AudioGrabber\settings.json`; `./` resolved via the exe location
    from the startup registry entry), confirmed or typed by the user.
-6. **Hugging Face token**: explains the 2 pages where to accept the model terms
+6. **Hugging Face token**: explains the page where to accept the model terms
    (with links), asks for the token, checks access, stores it in
    `~/.config/agscribe/` (permissions 600).
-7. **Downloads all models** once (~3 GB). At run time everything is offline
+7. **Downloads all models** once (~2 GB). At run time everything is offline
    (`HF_HUB_OFFLINE=1`): audio never leaves the machine.
 8. **Audio check**: plays a short tone through WSL; if not heard, configures the
    Windows-player fallback.
