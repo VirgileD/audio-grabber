@@ -88,10 +88,25 @@ AudioGrabber/
 ## Building the Project
 
 ### Prerequisites
-- .NET 8 SDK installed
-- Windows 10/11 (x64)
+- .NET 8 SDK installed (on Windows, or in WSL)
+- Windows 10/11 (x64) to run it
 
-### Build Commands
+### Developing from WSL
+
+The app only runs on Windows, but it can be built from WSL/Linux
+(`EnableWindowsTargeting` is set in the csproj). `run.sh` builds it, deploys it to
+`%USERPROFILE%\AudioGrabberDev` and launches it on Windows:
+
+```bash
+./run.sh          # build, deploy and start the app on Windows (look for the tray icon)
+./run.sh stop     # stop it
+./run.sh build    # compile only
+./run.sh release  # publish a Release build to the deploy folder
+```
+
+Line endings are CRLF for all text files except shell scripts (see `.gitattributes`).
+
+### Build Commands (Windows)
 
 ```bash
 # Navigate to project directory
@@ -126,7 +141,19 @@ dotnet run --project AudioGrabber/AudioGrabber.csproj --configuration Release
 3. Both system audio and microphone are now being recorded
 4. Press **Ctrl+R** again to stop recording
 5. The tray icon returns to **gray** and you'll hear another beep sound
-6. Recordings are saved to `Documents\AudioGrabber` by default
+6. Recordings are saved to `D:\Projects\audio-grabber` by default (`Documents\AudioGrabber` if there is no D: drive)
+
+### How Recording Works
+- System audio is captured from the default output device (WASAPI loopback). While
+  recording, AudioGrabber plays inaudible silence on that device so Windows keeps
+  delivering audio during quiet moments (otherwise silent stretches would be skipped).
+- The microphone goes through a ~120 ms jitter buffer with clock-drift correction,
+  so late mic packets don't cause micro-cuts. Your voice is therefore recorded
+  ~120 ms behind system audio.
+- Both sources are mixed at full volume with a soft limiter; surround (5.1/7.1)
+  output is downmixed to stereo.
+- MP3 encoding and disk writes run on a separate thread, so a slow disk can't
+  cause dropouts. Avoid OneDrive-synced folders for the output anyway.
 
 ### System Tray Menu
 Right-click the tray icon for options:
@@ -140,7 +167,7 @@ Right-click the tray icon for options:
 #### Recording Settings
 - **Output Folder**: Choose where recordings are saved (with Browse button)
 - **File Name Pattern**: Customize filename format with date/time placeholders
-  - Example: `Recording_{0:yyyy-MM-dd_HHmmss}.wav`
+  - Example: `Recording_{0:yyyy-MM-dd_HHmmss}.mp3`
   - Real-time preview shows example filename
 - **Open Recordings Folder**: Quick access button
 
@@ -160,7 +187,7 @@ Right-click the tray icon for options:
 
 ## Recording Logs
 
-Each recording session generates a detailed log file alongside the WAV file:
+Each recording session generates a detailed log file alongside the MP3 file:
 
 **Log File Location**: Same folder as recording, with `.log` extension  
 **Example**: `Recording_2026-03-19_150230.log`
@@ -173,6 +200,7 @@ Each recording session generates a detailed log file alongside the WAV file:
 - Operating system information
 - Application version
 - Bytes recorded and file size
+- Microphone underruns (times the mic stopped delivering audio; should be 0)
 - Any warnings or errors during recording
 
 **Example Log**:
@@ -180,7 +208,7 @@ Each recording session generates a detailed log file alongside the WAV file:
 ================================================================================
 AudioGrabber Recording Session Log
 ================================================================================
-Recording File: Recording_2026-03-19_150230.wav
+Recording File: Recording_2026-03-19_150230.mp3
 Session Started: 2026-03-19 15:02:30
 --------------------------------------------------------------------------------
 
@@ -202,9 +230,9 @@ Session completed successfully
 
 ## Default Settings
 
-- **Output Folder**: `%USERPROFILE%\Documents\AudioGrabber`
-- **File Pattern**: `Recording_{0:yyyy-MM-dd_HHmmss}.wav`
-- **Audio Format**: IEEE Float 32-bit, system sample rate, stereo
+- **Output Folder**: `D:\Projects\audio-grabber` (or `%USERPROFILE%\Documents\AudioGrabber` without a D: drive)
+- **File Pattern**: `Recording_{0:yyyy-MM-dd_HHmmss}.mp3`
+- **Audio Format**: MP3 128 kbps, system sample rate, stereo
 - **Hotkey**: Ctrl+R
 - **Show Notifications**: Enabled (errors only)
 - **Start with Windows**: Enabled
@@ -311,6 +339,8 @@ AudioGrabber includes comprehensive error handling for:
 - Ensure microphone is connected and enabled in Windows
 - Check microphone privacy settings in Windows
 - Verify microphone is set as default recording device
+- The first ~120 ms of each recording have no microphone (jitter buffer filling)
+- Check "Microphone underruns" in the recording's `.log` file
 
 ### Settings Not Saving
 - Check if `%APPDATA%\AudioGrabber` folder is writable
@@ -480,7 +510,8 @@ To completely remove AudioGrabber:
 - Cannot capture audio from DRM-protected content (by design)
 - Microphone capture uses default recording device only
 - Single hotkey for recording (cannot have separate start/stop hotkeys)
-- No audio format conversion (always saves as WAV)
+- Fixed output format (always saves as MP3, 128 kbps)
+- The microphone is recorded ~120 ms behind system audio (jitter buffer)
 
 ## Future Enhancements
 
