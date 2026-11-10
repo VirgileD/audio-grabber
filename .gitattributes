@@ -1,0 +1,24 @@
+# Text files are checked out with CRLF line endings (Windows convention),
+# on Windows and in WSL alike. Git stores them normalized (LF) internally.
+* text=auto eol=crlf
+# Known text types are marked explicitly so Git never has to guess.
+*.cs        text eol=crlf
+*.csproj    text eol=crlf
+*.sln       text eol=crlf
+*.manifest  text eol=crlf
+*.md        text eol=crlf
+*.json      text eol=crlf
+*.xml       text eol=crlf
+.gitignore      text eol=crlf
+.gitattributes  text eol=crlf
+
+# Shell scripts MUST stay LF, or bash fails with "$'\r': command not found".
+*.sh text eol=lf
+
+# Binaries
+*.ico binary
+*.png binary
+*.dll binary
+*.exe binary
+*.mp3 binary
+*.wav binary
