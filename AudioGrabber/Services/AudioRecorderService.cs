@@ -31,6 +31,13 @@ public class AudioRecorderService : IDisposable
     private WaveInEvent? _microphoneCapture;          // Microphone
     private BufferedWaveProvider? _loopbackBuffer;
     private BufferedWaveProvider? _microphoneBuffer;
+    private WaveFormat? _microphoneFormat;
+
+    // Microphone jitter buffer (see ReadMicrophoneSamples)
+    private const int MicTargetLatencyMs = 120;
+    private const int MicDriftToleranceMs = 40;
+    private bool _micPrimed;
+    private int _micUnderruns;
     private LameMP3FileWriter? _writer;
     private RecordingLogger? _logger;
     private DateTime _recordingStartTime;
@@ -77,7 +84,8 @@ public class AudioRecorderService : IDisposable
                 _microphoneCapture = new WaveInEvent
                 {
                     WaveFormat = new WaveFormat(loopbackFormat.SampleRate, 16, loopbackFormat.Channels),
-                    BufferMilliseconds = 50
+                    BufferMilliseconds = 50,
+                    NumberOfBuffers = 3
                 };
                 _microphoneAvailable = true;
                 _logger.LogInfo("Microphone device detected and initialized");
@@ -103,11 +111,16 @@ public class AudioRecorderService : IDisposable
                 _logger.LogInfo("Mixing Mode: System Audio + Microphone");
                 
                 // Create buffer for microphone (will be resampled/mixed with loopback)
-                _microphoneBuffer = new BufferedWaveProvider(_microphoneCapture.WaveFormat)
+                _microphoneFormat = _microphoneCapture.WaveFormat;
+                _microphoneBuffer = new BufferedWaveProvider(_microphoneFormat)
                 {
-                    BufferLength = _microphoneCapture.WaveFormat.AverageBytesPerSecond * 5,
-                    DiscardOnBufferOverflow = true
+                    BufferLength = _microphoneFormat.AverageBytesPerSecond * 5,
+                    DiscardOnBufferOverflow = true,
+                    // Return only real data; the jitter buffer handles shortfalls itself
+                    ReadFully = false
                 };
+                _micPrimed = false;
+                _micUnderruns = 0;
                 
                 // Wire up microphone data handler
                 _microphoneCapture.DataAvailable += OnMicrophoneDataAvailable;
@@ -246,21 +259,13 @@ public class AudioRecorderService : IDisposable
     
     private byte[] MixAudioData(byte[] loopbackData, int loopbackBytes)
     {
-        // Get microphone data: same number of samples as the loopback chunk, but the
-        // mic is 16-bit (2 bytes/sample) while loopback is 32-bit float (4 bytes/sample).
-        // Reading loopbackBytes here consumed twice the mic audio and threw half of it away.
-        var micBytes = loopbackBytes / 2;
-        var micData = new byte[micBytes];
-        
-        int actualMicBytes = 0;
-        if (_microphoneBuffer != null)
-        {
-            actualMicBytes = _microphoneBuffer.Read(micData, 0, micBytes);
-        }
-        
+        // Get as many microphone samples as the loopback chunk holds. The mic is 16-bit
+        // (2 bytes/sample) while loopback is 32-bit float (4 bytes/sample).
+        var micSamples = ReadMicrophoneSamples(loopbackBytes / 4);
+
         // Mix the audio (simple addition with clipping prevention)
         var mixedData = new byte[loopbackBytes];
-        
+
         // Assuming 32-bit float format from loopback
         for (int i = 0; i < loopbackBytes; i += 4)
         {
@@ -268,16 +273,10 @@ public class AudioRecorderService : IDisposable
             {
                 // Read loopback sample (32-bit float)
                 float loopbackSample = BitConverter.ToSingle(loopbackData, i);
-                
-                // Read microphone sample (16-bit PCM) and convert to float
-                float micSample = 0f;
-                int micOffset = i / 2; // 16-bit is half the size
-                if (micOffset + 1 < actualMicBytes)
-                {
-                    short micShort = BitConverter.ToInt16(micData, micOffset);
-                    micSample = micShort / 32768f; // Convert to float (-1.0 to 1.0)
-                }
-                
+
+                // Microphone sample, already converted to float (-1.0 to 1.0)
+                float micSample = micSamples[i / 4];
+
                 // Mix samples (average to prevent clipping)
                 float mixedSample = (loopbackSample + micSample) * 0.5f;
                 
@@ -292,7 +291,91 @@ public class AudioRecorderService : IDisposable
         
         return mixedData;
     }
-    
+
+    /// <summary>
+    /// Read microphone audio through a jitter buffer.
+    ///
+    /// The mic delivers audio in ~50 ms chunks, while loopback asks for ~10 ms at a
+    /// time, and the two devices run on independent clocks. So instead of reading
+    /// whatever happens to be buffered (and padding with silence = micro-cuts when a
+    /// chunk is slightly late), we:
+    ///  - wait until MicTargetLatencyMs of audio is buffered before using the mic;
+    ///  - keep the buffer level near that target by dropping or repeating a single
+    ///    sample frame per chunk when it drifts (inaudible, ~0.2% at most);
+    ///  - only go silent (and re-prime) if the mic truly stops delivering.
+    /// </summary>
+    private float[] ReadMicrophoneSamples(int sampleCount)
+    {
+        var samples = new float[sampleCount];
+        var buffer = _microphoneBuffer;
+        var format = _microphoneFormat;
+        if (buffer == null || format == null)
+        {
+            return samples;
+        }
+
+        int channels = format.Channels;
+        int bytesPerFrame = format.BlockAlign;
+        int frames = sampleCount / channels;
+        if (frames == 0)
+        {
+            return samples;
+        }
+
+        int bufferedFrames = buffer.BufferedBytes / bytesPerFrame;
+        int targetFrames = format.SampleRate * MicTargetLatencyMs / 1000;
+        int toleranceFrames = format.SampleRate * MicDriftToleranceMs / 1000;
+
+        if (!_micPrimed)
+        {
+            if (bufferedFrames < targetFrames)
+            {
+                return samples; // still filling the jitter buffer: mic contributes silence
+            }
+            _micPrimed = true;
+        }
+
+        // Drift correction: consume one frame more (buffer too full) or one frame
+        // less (buffer running low) than we output.
+        int framesToRead = frames;
+        if (bufferedFrames > targetFrames + toleranceFrames)
+        {
+            framesToRead = frames + 1;
+        }
+        else if (bufferedFrames < targetFrames - toleranceFrames && frames > 1)
+        {
+            framesToRead = frames - 1;
+        }
+
+        var raw = new byte[framesToRead * bytesPerFrame];
+        int framesRead = buffer.Read(raw, 0, raw.Length) / bytesPerFrame;
+        if (framesRead < framesToRead)
+        {
+            // Mic stopped delivering: the missing part stays silent; wait for the
+            // buffer to refill before using the mic again.
+            _micPrimed = false;
+            _micUnderruns++;
+        }
+
+        // Map output frames onto the frames read (nearest neighbour), which drops
+        // or repeats exactly one frame when framesToRead differs from frames.
+        for (int frame = 0; frame < frames; frame++)
+        {
+            int sourceFrame = (int)((long)frame * framesToRead / frames);
+            if (sourceFrame >= framesRead)
+            {
+                break;
+            }
+            for (int ch = 0; ch < channels; ch++)
+            {
+                short value = BitConverter.ToInt16(raw, sourceFrame * bytesPerFrame + ch * 2);
+                samples[frame * channels + ch] = value / 32768f;
+            }
+        }
+
+        return samples;
+    }
+
     private void OnRecordingStopped(object? sender, StoppedEventArgs e)
     {
         var duration = DateTime.Now - _recordingStartTime;
@@ -309,6 +392,10 @@ public class AudioRecorderService : IDisposable
         }
         else
         {
+            if (_microphoneFormat != null)
+            {
+                _logger?.LogInfo($"Microphone underruns: {_micUnderruns}");
+            }
             _logger?.EndSession(_bytesRecorded, duration);
         }
         
@@ -344,7 +431,8 @@ public class AudioRecorderService : IDisposable
         
         // Dispose buffers
         _microphoneBuffer = null;
-        
+        _microphoneFormat = null;
+
         // Dispose writer
         _writer?.Dispose();
         _writer = null;
