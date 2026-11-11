@@ -351,7 +351,9 @@ def transcribe(
         selected = []
         for recording in requested:
             status = recording.status()
-            if status == rec.IN_PROGRESS:
+            if not recording.has_audio:
+                console.print(f"{WARN} {recording.name}: its audio was deleted, it can't be transcribed again")
+            elif status == rec.IN_PROGRESS:
                 console.print(f"{WARN} {recording.name} is still being recorded: skipped")
             elif status == rec.DONE and not force:
                 console.print(f"{WARN} {recording.name} is already transcribed (use --force to redo it)")
@@ -497,6 +499,8 @@ def status() -> None:
                 label = f"[yellow]to name ({to_identify + to_confirm})[/yellow]"
             else:
                 label = "[green]done[/green]"
+            if not recording.has_audio:
+                label += " [dim](audio deleted)[/dim]"
         elif status_ == rec.FAILED:
             error_type = (state.get("error") or "").split(":")[0]
             label = f"[red]failed[/red] [dim]{error_type}[/dim]"
@@ -545,3 +549,152 @@ def render(
         elif names:
             console.print(f"{WARN} {recording.name} isn't transcribed yet")
     console.print(f"{count} transcript(s) written to {config.transcripts_path}")
+
+
+# -------------------------------------------------------------------------------- name
+
+
+class _TerminalUI:
+    """Terminal input/output for the naming session."""
+
+    def say(self, text: str) -> None:
+        console.print(text, highlight=False)
+
+    def ask(self, prompt: str, completions: dict[str, str] | None = None) -> str:
+        from prompt_toolkit import prompt as read_line
+        from prompt_toolkit.completion import WordCompleter
+
+        completer = None
+        if completions:
+            completer = WordCompleter(
+                list(completions), meta_dict=completions, ignore_case=True, sentence=True
+            )
+        return read_line(f"{prompt}: ", completer=completer)
+
+
+@app.command()
+def name(
+    names: list[str] = typer.Argument(None, help="Recordings to work on (default: all with speakers to name)."),
+) -> None:
+    """Name the speakers agscribe doesn't know yet (listening to their voice)."""
+    import sys
+
+    from . import recordings as rec
+    from .naming import NamingSession, RecordingData
+    from .playback import Player, load_clip
+    from .voices import VoiceStore
+
+    config = _require_config()
+    if not sys.stdin.isatty():
+        console.print(f"{FAIL} agscribe name is interactive: run it in a terminal")
+        raise typer.Exit(1)
+    everything = rec.discover(config)
+    try:
+        candidates = rec.find(config, names) if names else list(reversed(everything))  # newest first
+    except LookupError as exc:
+        console.print(f"{FAIL} {exc}")
+        raise typer.Exit(1) from exc
+    targets = []
+    for recording in candidates:
+        data = RecordingData.load(recording)
+        if data is not None and data.pending_labels():
+            targets.append(recording)
+    if not targets:
+        console.print(f"{OK} No speaker left to name")
+        return
+
+    store = VoiceStore(config.data_path)
+    player = Player(config.playback)
+    session = NamingSession(config, store, everything, _TerminalUI(), player, clip_loader=load_clip)
+    try:
+        session.run(targets)
+    except (KeyboardInterrupt, EOFError):
+        console.print(f"\n{WARN} Stopped (everything named so far is saved)")
+    finally:
+        player.close()
+
+    remaining = sum(
+        len(data.pending_labels())
+        for data in (RecordingData.load(r) for r in everything)
+        if data is not None
+    )
+    console.print(f"\n{OK} {session.named} speaker(s) named"
+                  + (f"; {remaining} still to name (run agscribe name again)" if remaining else ""))
+
+
+# ----------------------------------------------------------------------------- cleanup
+
+
+@app.command()
+def cleanup(
+    older_than: int = typer.Option(30, "--older-than", help="Only recordings older than this many days (0 = any age)."),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Delete without asking for confirmation."),
+) -> None:
+    """Delete the audio of recordings that are transcribed and fully named.
+
+    Transcripts, speaker data and learned voices are kept. Recordings with
+    speakers still to name are never touched (naming needs the audio)."""
+    import sys
+    from datetime import datetime
+
+    from rich.table import Table
+
+    from . import recordings as rec
+    from .pipeline import render_recording
+    from .render import pending
+    from .voices import VoiceStore
+
+    config = _require_config()
+    now = datetime.now()
+    candidates, waiting = [], 0
+    for recording in rec.discover(config):
+        if not recording.has_audio or recording.status() != rec.DONE:
+            continue
+        speakers = rec.read_json(recording.data_dir / "speakers.json") or {}
+        if any(pending(speakers)):
+            waiting += 1
+            continue
+        if older_than <= 0 or (now - recording.started).days >= older_than:
+            candidates.append(recording)
+
+    if waiting:
+        console.print(f"[dim]{waiting} transcribed recording(s) kept: speakers still to name (agscribe name)[/dim]")
+    if not candidates:
+        age = f" older than {older_than} days" if older_than else ""
+        console.print(f"{OK} No fully named recording{age} with audio to delete")
+        return
+
+    table = Table(header_style="bold", box=None, padding=(0, 2))
+    table.add_column("Recording")
+    table.add_column("Date")
+    table.add_column("Size", justify="right")
+    total = 0
+    for recording in candidates:
+        size = recording.mp3.stat().st_size + (recording.log.stat().st_size if recording.log.exists() else 0)
+        total += size
+        table.add_row(recording.name, f"{recording.started:%Y-%m-%d}", f"{size / 1e6:.0f} MB")
+    console.print(table)
+    console.print(f"Deletes the MP3 (and .log) of {len(candidates)} recording(s): {total / 1e6:.0f} MB freed.")
+    console.print("[dim]Transcripts, speaker data and learned voices are kept.[/dim]")
+
+    if not yes:
+        if not sys.stdin.isatty():
+            console.print(f"{FAIL} Not running in a terminal: add --yes to delete without confirmation")
+            raise typer.Exit(1)
+        if not Confirm.ask("Delete this audio?", default=False):
+            raise typer.Exit(0)
+
+    store = VoiceStore(config.data_path)
+    for recording in candidates:
+        try:
+            recording.mp3.unlink()
+            if recording.log.exists():
+                recording.log.unlink()
+        except OSError as exc:
+            console.print(f"{FAIL} {recording.name}: {exc}")
+            continue
+        state = recording.state() or {}
+        state["audio_deleted"] = now.isoformat(timespec="seconds")
+        rec.write_json(recording.state_file, state)
+        render_recording(recording, config, store)  # header now says "audio deleted"
+        console.print(f"{OK} {recording.name}")

@@ -155,6 +155,15 @@ Recording_2026-11-12_100000 - Speaker 1 (6 min 20 s, 14 turns)
      (clip) - same person? [Y/n]`).
 - Email format is validated; names can be fixed later with `agscribe people`.
 
+## Deleting recordings (`agscribe cleanup`)
+
+MP3s can be deleted to save space; what's kept per recording in
+`transcripts-data/` (words, speakers, voice embeddings: ~1 MB per hour) is enough
+for `status`, `render` and voice learning. Recordings without audio stay listed
+("audio deleted"), and naming falls back to quotes. `agscribe cleanup` deletes
+the MP3 + `.log` of recordings that are done and fully named, older than 30 days
+by default (`--older-than N`), after showing the space freed and asking.
+
 ## Setup (`setup.sh` at the repo root)
 
 Goal: in a brand-new Ubuntu WSL, `git clone` + `./setup.sh` and it

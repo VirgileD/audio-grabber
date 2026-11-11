@@ -31,6 +31,25 @@ def test_tone(sample_rate: int = 16000) -> np.ndarray:
     return np.concatenate([beep, gap, beep]).astype(np.float32)
 
 
+def load_clip(path: Path, start: float, end: float, sample_rate: int = 16000) -> np.ndarray:
+    """Decode only [start, end] seconds of an audio file, as mono float samples.
+    (ffmpeg seeks directly to the start: no need to decode a whole meeting.)"""
+    if shutil.which("ffmpeg") is None:
+        raise RuntimeError("ffmpeg is missing (run ./setup.sh to install it)")
+    result = subprocess.run(
+        [
+            "ffmpeg", "-nostdin", "-loglevel", "error",
+            "-ss", f"{max(0.0, start):.2f}", "-t", f"{max(0.1, end - start):.2f}",
+            "-i", str(path), "-f", "f32le", "-ac", "1", "-ar", str(sample_rate), "-",
+        ],
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"ffmpeg could not read {path.name}: {result.stderr.decode(errors='replace').strip()}")
+    return np.frombuffer(result.stdout, dtype="<f4").copy()
+
+
 def wsl_playback_available() -> bool:
     return shutil.which("ffplay") is not None
 

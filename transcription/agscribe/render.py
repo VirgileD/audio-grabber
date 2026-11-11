@@ -84,7 +84,11 @@ def pending(speakers: dict[str, Any]) -> tuple[int, int]:
 
 
 def render_markdown(
-    transcript: dict[str, Any], speakers: dict[str, Any], store: VoiceStore, mp3_windows_path: str
+    transcript: dict[str, Any],
+    speakers: dict[str, Any],
+    store: VoiceStore,
+    mp3_windows_path: str,
+    audio_deleted: bool = False,
 ) -> str:
     words = transcript.get("words", [])
     paragraphs = turns(words, speakers)
@@ -99,7 +103,7 @@ def render_markdown(
     lines = [
         f"# Recording {transcript.get('started', '')[:16].replace('T', ' ')}",
         "",
-        f"- Recording: {mp3_windows_path}",
+        f"- Recording: {mp3_windows_path}{' (audio deleted)' if audio_deleted else ''}",
         f"- Duration: {short_duration(transcript.get('duration', 0))} · "
         f"Language: {LANGUAGES.get(language, language)}",
         f"- Participants: {', '.join(participant(l, speakers, store) for l in order) or 'none'}",

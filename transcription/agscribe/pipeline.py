@@ -232,7 +232,7 @@ def write_markdown(
     speakers: dict[str, Any],
 ) -> None:
     mp3_windows = windows.to_windows_path(recording.mp3) or str(recording.mp3)
-    text = render_markdown(transcript, speakers, store, mp3_windows)
+    text = render_markdown(transcript, speakers, store, mp3_windows, audio_deleted=not recording.has_audio)
     target = config.transcripts_path / filename
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp = target.with_name(target.name + ".tmp")

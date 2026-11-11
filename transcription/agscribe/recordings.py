@@ -48,15 +48,26 @@ class Recording:
         return self.mp3.with_suffix(".log")
 
     @property
+    def has_audio(self) -> bool:
+        """False once the MP3 was deleted (the transcript and voice data remain)."""
+        return self.mp3.is_file()
+
+    @property
     def started(self) -> datetime:
-        """Start time from the file name (Recording_2026-11-12_100000), else file time."""
+        """Start time from the file name (Recording_2026-11-12_100000), else the
+        saved transcript, else the file time."""
         match = _TIMESTAMP.search(self.name)
         if match:
             try:
                 return datetime(*(int(part) for part in match.groups()))
             except ValueError:
                 pass
-        return datetime.fromtimestamp(self.mp3.stat().st_mtime)
+        transcript = read_json(self.data_dir / "transcript.json") or {}
+        if transcript.get("started"):
+            return datetime.fromisoformat(transcript["started"])
+        if self.has_audio:
+            return datetime.fromtimestamp(self.mp3.stat().st_mtime)
+        return datetime.fromtimestamp(self.data_dir.stat().st_mtime)
 
     @property
     def state_file(self) -> Path:
@@ -84,16 +95,24 @@ class Recording:
 
 
 def discover(config: Config) -> list[Recording]:
-    """All MP3 recordings in the recordings folder, oldest first."""
+    """All recordings, oldest first: MP3s in the recordings folder, plus transcribed
+    recordings whose MP3 was deleted (their transcript and voice data remain)."""
     folder = config.recordings_path
     if not folder.is_dir():
         return []
-    recordings = [
-        Recording(mp3, config.data_path / "recordings" / mp3.stem)
+    recordings = {
+        mp3.stem: Recording(mp3, config.data_path / "recordings" / mp3.stem)
         for mp3 in folder.iterdir()
         if mp3.suffix.lower() == ".mp3" and mp3.is_file()
-    ]
-    return sorted(recordings, key=lambda r: (r.started, r.name))
+    }
+    data_root = config.data_path / "recordings"
+    if data_root.is_dir():
+        for data_dir in data_root.iterdir():
+            if data_dir.name not in recordings and (data_dir / "state.json").is_file():
+                state = read_json(data_dir / "state.json") or {}
+                if state.get("status") == DONE:
+                    recordings[data_dir.name] = Recording(folder / f"{data_dir.name}.mp3", data_dir)
+    return sorted(recordings.values(), key=lambda r: (r.started, r.name))
 
 
 def find(config: Config, names: list[str]) -> list[Recording]:
